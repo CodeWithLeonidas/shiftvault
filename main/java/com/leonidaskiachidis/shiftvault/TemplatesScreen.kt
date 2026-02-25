@@ -2,8 +2,6 @@ package com.leonidaskiachidis.shiftvault
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,7 +16,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.leonidaskiachidis.shiftvault.ui.theme.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.ui.tooling.preview.Preview
@@ -29,12 +26,11 @@ import kotlin.text.toInt
 fun TemplatesScreen(
     shiftManager: ShiftManager,
     onEdit: (Int) -> Unit,
-    onCreateNew: () -> Unit // Add this parameter
+    onCreateNew: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var templates by remember { mutableStateOf(listOf<Shift>()) }
 
-    // Load templates from DataStore
     LaunchedEffect(Unit) {
         shiftManager.getTemplates.collect { loadedTemplates ->
             templates = loadedTemplates
@@ -44,16 +40,18 @@ fun TemplatesScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         floatingActionButton = {
-            FloatingActionButton(
+            ExtendedFloatingActionButton(
+                text = { Text("New Shift") },
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Create Template"
+                    )
+                },
                 onClick = onCreateNew,
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "Create New Template"
-                )
-            }
+            )
         }
     ) { paddingValues ->
         TemplatesScreenContent(
@@ -79,31 +77,41 @@ fun TemplatesScreenContent(
     modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = modifier // Apply the modifier here
+        modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
     ) {
-        Text(
-            text = "Your Shifts",
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
-        )
-        Text(
-            text = "Manage your custom work hours.",
-            fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 24.dp)
-        )
+        // Header Section
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.primary)
+                .padding(horizontal = 24.dp, vertical = 32.dp)
+        ) {
+            Column {
+                Text(
+                    text = "Shift Templates",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "${templates.size} ${if (templates.size == 1) "template" else "templates"} configured",
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                )
+            }
+        }
 
         if (templates.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No custom templates yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            EmptyTemplatesState(modifier = Modifier.fillMaxSize())
         } else {
-            androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
                 itemsIndexed(templates) { index, shift ->
                     TemplateItem(
                         shift = shift,
@@ -111,64 +119,200 @@ fun TemplatesScreenContent(
                         onDelete = { onDelete(shift) }
                     )
                 }
+
+                item {
+                    Spacer(modifier = Modifier.height(80.dp))
+                }
             }
         }
     }
 }
 
+@Composable
+fun EmptyTemplatesState(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 48.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(120.dp)
+                    .background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                        RoundedCornerShape(60.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "No Shift Templates Yet",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Create your first shift template to get started with managing your work schedule efficiently",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                lineHeight = 20.sp
+            )
+        }
+    }
+}
 
 @Composable
 fun TemplateItem(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
+    var showDeleteDialog by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(16.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        shape = RoundedCornerShape(20.dp)
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Color indicator
+            // Color indicator with gradient effect
             Box(
                 modifier = Modifier
-                    .size(12.dp)
-                    .background(Color(shift.colorValue.toInt()), RoundedCornerShape(2.dp))
-            )
+                    .size(56.dp)
+                    .background(
+                        Color(shift.colorValue.toInt()),
+                        RoundedCornerShape(16.dp)
+                    ))
 
             Spacer(modifier = Modifier.width(16.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(shift.name, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Text("${shift.startTime} - ${shift.endTime}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = shift.name,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = shift.startTime,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Text(
+                        text = " → ",
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    )
+
+                    Text(
+                        text = shift.endTime,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
-            IconButton(onClick = onEdit) {
-                Icon(
-                    imageVector = Icons.Default.Edit,
-                    contentDescription = "Edit",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            // Action buttons
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                IconButton(
+                    onClick = onEdit,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                            RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
-            IconButton(onClick = onDelete) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                IconButton(
+                    onClick = { showDeleteDialog = true },
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(
+                            MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                            RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Shift Template?") },
+            text = { Text("Are you sure you want to delete \"${shift.name}\"? This action cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDelete()
+                        showDeleteDialog = false
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
-
-// Preview for TemplatesScreenContent
 @Preview(showBackground = true)
 @Composable
 fun TemplatesScreenContentPreview() {
     val fakeShifts = listOf(
         Shift("Morning Shift", "08:00", "16:00", 0xFF2196F3),
-        Shift("Evening Shift", "16:00", "00:00", 0xFFF44336)
+        Shift("Evening Shift", "16:00", "00:00", 0xFFF44336),
+        Shift("Night Shift", "22:00", "06:00", 0xFF9C27B0)
     )
     TemplatesScreenContent(
         templates = fakeShifts,
@@ -177,7 +321,12 @@ fun TemplatesScreenContentPreview() {
     )
 }
 
-// Preview for TemplateItem
+@Preview(showBackground = true)
+@Composable
+fun EmptyTemplatesStatePreview() {
+    EmptyTemplatesState()
+}
+
 @Preview(showBackground = true)
 @Composable
 fun TemplateItemPreview() {
@@ -187,3 +336,4 @@ fun TemplateItemPreview() {
         onDelete = {}
     )
 }
+

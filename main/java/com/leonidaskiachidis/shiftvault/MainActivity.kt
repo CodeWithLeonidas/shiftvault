@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.EaseOutBack
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +51,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandIn
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkOut
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -74,6 +78,16 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.PendingActions
+import androidx.compose.material.icons.filled.WatchLater
+import androidx.compose.material.icons.outlined.BarChart
+import androidx.compose.material.icons.outlined.PendingActions
+import androidx.compose.material.icons.outlined.WatchLater
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import com.leonidaskiachidis.shiftvault.ui.theme.ChampagneGold
+import kotlinx.coroutines.launch
 
 
 class MainActivity : ComponentActivity() {
@@ -82,8 +96,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             // 1. Create a state variable for the theme
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val shiftManager = remember { ShiftManager(context) }
+            val scope = rememberCoroutineScope()
+
             val systemDark = isSystemInDarkTheme()
             var isDarkTheme by remember { mutableStateOf(systemDark) }
+
+// This loads the currency from your persistent storage
+            val selectedCurrencyCode by shiftManager.getCurrency.collectAsState(initial = "EUR")
 
             // 2. Pass this state to your Theme wrapper
             ShiftVaultTheme(darkTheme = isDarkTheme) {
@@ -103,98 +124,30 @@ class MainActivity : ComponentActivity() {
                     ) {
                         composable(
                             route = Screen.Vault.route,
+                            // Replace all your enter/exit/pop transitions with this unified style:
                             enterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Templates.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Stats.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Settings.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.CustomShift.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    else -> slideInHorizontally(
-                                        initialOffsetX = { -it / 3 },
-                                        animationSpec = tween(250)
-                                    ) + fadeIn(tween(250))
-                                }
+                                scaleIn(
+                                    initialScale = 0.92f,
+                                    animationSpec = tween(350, easing = EaseOutBack) // "Playful" bounce
+                                ) + fadeIn(animationSpec = tween(300))
                             },
-
                             exitTransition = {
-                                when (targetState.destination.route) {
-                                    Screen.Templates.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Stats.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Settings.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.CustomShift.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    else -> slideOutHorizontally(
-                                        targetOffsetX = { -it / 3 },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                }
+                                scaleOut(
+                                    targetScale = 1.05f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             },
-
                             popEnterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Templates.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Stats.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Settings.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.CustomShift.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    else -> fadeIn(tween(200))
-                                }
+                                scaleIn(
+                                    initialScale = 1.05f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
-
                             popExitTransition = {
-                                when (targetState.destination.route) {
-                                    Screen.Templates.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Stats.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Settings.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.CustomShift.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    else -> fadeOut(tween(150))
-                                }
+                                scaleOut(
+                                    targetScale = 0.92f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             }
                         )
                         {
@@ -210,37 +163,33 @@ class MainActivity : ComponentActivity() {
                         composable(
                             route = Screen.Templates.route,
                             enterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Vault.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Settings.route -> slideInHorizontally(
-                                        initialOffsetX = { -it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    else -> fadeIn(tween(200))
-                                }
+                                scaleIn(
+                                    initialScale = 0.92f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             exitTransition = {
-                                when (targetState.destination.route) {
-                                    Screen.Vault.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Settings.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    else -> fadeOut(tween(150))
-                                }
+                                scaleOut(
+                                    targetScale = 1.05f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             },
-                            popEnterTransition = { fadeIn(tween(200)) },
-                            popExitTransition = { fadeOut(tween(150)) }
+                            popEnterTransition = {
+                                scaleIn(
+                                    initialScale = 1.05f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
+                            },
+                            popExitTransition = {
+                                scaleOut(
+                                    targetScale = 0.92f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
+                            }
                         ) {
                             val context = androidx.compose.ui.platform.LocalContext.current
                             TemplatesScreen(
-                                shiftManager = remember { ShiftManager(context) },
+                                shiftManager = shiftManager,
                                 onEdit = { index ->
                                     navController.navigate(Screen.CustomShift.createRoute("none", index))
                                 },
@@ -253,32 +202,30 @@ class MainActivity : ComponentActivity() {
                         composable(
                             route = Screen.Stats.route,
                             enterTransition = {
-                                slideInHorizontally(
-                                    initialOffsetX = { it },
-                                    animationSpec = tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                ) + fadeIn(tween(300))
+                                scaleIn(
+                                    initialScale = 0.92f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             exitTransition = {
-                                slideOutHorizontally(
-                                    targetOffsetX = { it },
-                                    animationSpec = tween(250)
-                                ) + fadeOut(tween(250))
+                                scaleOut(
+                                    targetScale = 1.05f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             },
                             popEnterTransition = {
-                                slideInHorizontally(
-                                    initialOffsetX = { it },
-                                    animationSpec = tween(250)
-                                ) + fadeIn(tween(250))
+                                scaleIn(
+                                    initialScale = 1.05f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             popExitTransition = {
-                                slideOutHorizontally(
-                                    targetOffsetX = { it },
-                                    animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                ) + fadeOut(tween(250))
+                                scaleOut(
+                                    targetScale = 0.92f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             }
                         ) {
-                            val context = androidx.compose.ui.platform.LocalContext.current
-                            val shiftManager = remember { ShiftManager(context) }
                             var savedShifts by remember { mutableStateOf(mapOf<java.time.LocalDate, List<Shift>>()) }
 
                             LaunchedEffect(Unit) {
@@ -288,8 +235,9 @@ class MainActivity : ComponentActivity() {
                             }
 
                             StatsScreen(
-                                savedShifts = savedShifts,
-                                onBackClick = { navController.popBackStack() }  // UPDATED
+                                savedShifts = savedShifts, // Passing your shifts map
+                                onBackClick = { navController.popBackStack() },
+                                currencyCode = selectedCurrencyCode // PASSING THE DYNAMIC CURRENCY
                             )
                         }
 
@@ -298,65 +246,51 @@ class MainActivity : ComponentActivity() {
                         composable(
                             route = Screen.Settings.route,
                             enterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Templates.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Vault.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    else -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeIn(tween(250))
-                                }
+                                scaleIn(
+                                    initialScale = 0.92f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             exitTransition = {
-                                when (targetState.destination.route) {
-                                    Screen.Templates.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Vault.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    else -> fadeOut(tween(150))
-                                }
+                                scaleOut(
+                                    targetScale = 1.05f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             },
                             popEnterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Templates.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Vault.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(250))
-                                    else -> fadeIn(tween(200))
-                                }
+                                scaleIn(
+                                    initialScale = 1.05f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             popExitTransition = {
-                                when (targetState.destination.route) {
-                                    Screen.Templates.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Vault.route -> slideOutHorizontally(
-                                        targetOffsetX = { -it },
-                                        animationSpec = tween(250)
-                                    ) + fadeOut(tween(250))
-                                    else -> fadeOut(tween(150))
-                                }
+                                scaleOut(
+                                    targetScale = 0.92f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             }
                         ) {
+                            // 1. Create a state to hold shifts for the export
+                            var savedShifts by remember { mutableStateOf(mapOf<java.time.LocalDate, List<Shift>>()) }
+
+                            // 2. Load them from the manager
+                            LaunchedEffect(Unit) {
+                                shiftManager.getShifts.collect { loadedShifts ->
+                                    savedShifts = loadedShifts
+                                }
+                            }
                             SettingsScreen(
                                 isDarkTheme = isDarkTheme,
                                 onThemeChange = { isDark -> isDarkTheme = isDark },
-                                onBackClick = { navController.popBackStack() }
+                                // ADD THESE TWO LINES:
+                                selectedCurrencyCode = selectedCurrencyCode,
+                                onCurrencyChange = { newCode ->
+                                    scope.launch {
+                                        shiftManager.saveCurrency(newCode)
+                                    }
+                                },
+                                onBackClick = { navController.popBackStack() },
+                                onExportPdf = { ExportHelper.exportShiftsToPdf(context, savedShifts) },
                             )
                         }
 
@@ -369,58 +303,28 @@ class MainActivity : ComponentActivity() {
                                 }
                             ),
                             enterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Vault.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(300))
-                                    Screen.Templates.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(300))
-                                    else -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeIn(tween(300))
-                                }
+                                scaleIn(
+                                    initialScale = 0.92f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             exitTransition = {
-                                slideOutHorizontally(
-                                    targetOffsetX = { it },
-                                    animationSpec = tween(250)
-                                ) + fadeOut(tween(250))
+                                scaleOut(
+                                    targetScale = 1.05f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             },
                             popEnterTransition = {
-                                when (initialState.destination.route) {
-                                    Screen.Vault.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeIn(tween(250))
-                                    Screen.Templates.route -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeIn(tween(250))
-                                    else -> slideInHorizontally(
-                                        initialOffsetX = { it },
-                                        animationSpec = tween(250)
-                                    ) + fadeIn(tween(250))
-                                }
+                                scaleIn(
+                                    initialScale = 1.05f,
+                                    animationSpec = tween(350, easing = EaseOutBack)
+                                ) + fadeIn(animationSpec = tween(300))
                             },
                             popExitTransition = {
-                                when (targetState.destination.route) {
-                                    Screen.Vault.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeOut(tween(250))
-                                    Screen.Templates.route -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeOut(tween(250))
-                                    else -> slideOutHorizontally(
-                                        targetOffsetX = { it },
-                                        animationSpec = tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                                    ) + fadeOut(tween(250))
-                                }
+                                scaleOut(
+                                    targetScale = 0.92f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
+                                ) + fadeOut(animationSpec = tween(250))
                             }
                         ) { backStackEntry ->
                             val dateString = backStackEntry.arguments?.getString("date")
@@ -431,7 +335,8 @@ class MainActivity : ComponentActivity() {
                             CustomShiftScreen(
                                 selectedDate = date,
                                 templateIndex = if (templateIndex == -1) null else templateIndex,
-                                shiftManager = remember { ShiftManager(context) },
+                                shiftManager = shiftManager,
+                                currencyCode = selectedCurrencyCode,
                                 onBackClick = { navController.popBackStack() },
                                 onSaveFinished = { navController.popBackStack() }
                             )
@@ -442,17 +347,13 @@ class MainActivity : ComponentActivity() {
 
                     BottomNavigationBar(
                         currentRoute = currentRoute,
+                        isVisible = currentRoute != Screen.CustomShift.route,
                         onNavigate = { route ->
                             navController.navigate(route) {
-                                // Pop up to the start destination of the graph to
-                                // avoid building up a large stack of destinations
                                 popUpTo(navController.graph.startDestinationId) {
                                     saveState = true
                                 }
-                                // Avoid multiple copies of the same destination when
-                                // reselecting the same item
                                 launchSingleTop = true
-                                // Restore state when reselecting a previously selected item
                                 restoreState = true
                             }
                         }
@@ -474,53 +375,65 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
 @Composable
 fun BottomNavigationBar(
     currentRoute: String?,
+    isVisible: Boolean = true,
     onNavigate: (String) -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
-
-    // Aesthetic configurations based on theme
     val barBackground = if (isDark) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surface
     val barElevation = if (isDark) 0.dp else 8.dp
     val barBorderColor = if (isDark) MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f) else Color.Transparent
 
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(elevation = barElevation, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)),
-        color = barBackground,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        // Fix: Use BorderStroke instead of Modifier.border
-        border = if (isDark) BorderStroke(1.dp, barBorderColor) else null
+    AnimatedVisibility(
+        visible = isVisible,
+        enter = slideInHorizontally(
+            initialOffsetX = { it },
+            animationSpec = tween(400, easing = EaseOutBack)
+        ) + fadeIn(animationSpec = tween(300)),
+        exit = slideOutHorizontally(
+            targetOffsetX = { it },
+            animationSpec = tween(300, easing = FastOutSlowInEasing)
+        ) + fadeOut(animationSpec = tween(250))
     ) {
-        Row(
+        Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
-                .height(84.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
+                .shadow(elevation = barElevation, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)),
+            color = barBackground,
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            border = if (isDark) BorderStroke(1.dp, barBorderColor) else null
         ) {
-            val items = listOf(
-                Triple("Vault", Icons.Filled.CalendarMonth to Icons.Outlined.CalendarMonth, Screen.Vault.route),
-                Triple("Templates", Icons.Filled.Description to Icons.Outlined.Description, Screen.Templates.route),
-                Triple("Settings", Icons.Filled.Settings to Icons.Outlined.Settings, Screen.Settings.route)
-            )
-
-            items.forEach { (label, icons, route) ->
-                val isSelected = currentRoute == route
-
-                CreativeNavItem(
-                    label = label,
-                    selectedIcon = icons.first,
-                    unselectedIcon = icons.second,
-                    isSelected = isSelected,
-                    isDark = isDark,
-                    onClick = { onNavigate(route) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(0.dp)
+                    .height(92.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val items = listOf(
+                    Triple("Vault", Icons.Filled.CalendarMonth to Icons.Outlined.CalendarMonth, Screen.Vault.route),
+                    Triple("Templates", Icons.Filled.PendingActions to Icons.Outlined.PendingActions, Screen.Templates.route),
+                    Triple("Stats", Icons.Filled.BarChart to Icons.Outlined.BarChart, Screen.Stats.route),
+                    Triple("Settings", Icons.Filled.Settings to Icons.Outlined.Settings, Screen.Settings.route)
                 )
+
+                items.forEach { (label, icons, route) ->
+                    val isSelected = currentRoute == route
+
+                    CreativeNavItem(
+                        label = label,
+                        selectedIcon = icons.first,
+                        unselectedIcon = icons.second,
+                        isSelected = isSelected,
+                        isDark = isDark,
+                        onClick = { onNavigate(route) }
+                    )
+                }
             }
         }
     }
 }
+
 
 @Composable
 fun CreativeNavItem(
@@ -551,7 +464,7 @@ fun CreativeNavItem(
     // Dynamic Colors based on Theme
     val selectedColor = if (isDark) ElectricViolet else MaterialTheme.colorScheme.primary
     val unselectedColor = if (isDark) SlateGrey else MutedText
-    val indicatorColor = if (isDark) ElectricViolet.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer
+    val indicatorColor = if (isDark) ElectricViolet.copy(alpha = 0.15f) else ChampagneGold.copy(alpha = 0.18f)
 
     // Animated container size
     val animatedWeight by animateFloatAsState(

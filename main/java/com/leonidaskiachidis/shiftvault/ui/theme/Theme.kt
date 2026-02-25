@@ -9,13 +9,13 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-// --- Updated "Dimmed" Light Theme Colors ---
-val RoyalBlue = Color(0xFF151B54)      // Darker Royal Blue for better contrast
-val ChampagneGold = Color(0xFFC5A028)  // Slightly darker Gold
-val PlatinumGrey = Color(0xFFE3E6EA)   // Replaces IceWhite (Background) - Darker, cooler grey
-val CloudWhite = Color(0xFFF7F9FC)     // Replaces PureWhite (Surface) - Not blinding white
-val DeepSlate = Color(0xFF1F2933)      // Darker text color
-val CardGrey = Color(0xFFC2C4C7)       // Darker container color
+// --- Professional Light Theme Colors ---
+val CharcoalGrey = Color(0xFF467C83)      // Professional dark grey primary
+val AmberAccent = Color(0xFFF59E0B)       // Warm accent
+val IvoryWhite = Color(0xFFFAFAFA)        // Softer white background
+val PureWhite = Color(0xFFFFFFFF)         // Cards
+val InkBlack = Color(0xFF1A202C)          // Text
+val SilverGrey = Color(0xFFE2E8F0)        // Subtle surfaces
 
 private val DarkColorScheme = darkColorScheme(
     primary = SoftCyan,
@@ -23,25 +23,33 @@ private val DarkColorScheme = darkColorScheme(
     tertiary = MutedText,
     background = MidnightBlue,
     surface = SlateGrey,
-    surfaceVariant = SlateGrey.copy(alpha = 0.5f),
-    onPrimary = MidnightBlue,
+    surfaceVariant = Color(0xFF334155),
+    surfaceContainerHigh = Color(0xFF1E293B),
+    primaryContainer = SoftCyan.copy(alpha = 0.15f),
+    onPrimary = Color(0xFF0A0E1A),
     onBackground = OffWhite,
-    onSurface = OffWhite
+    onSurface = OffWhite,
+    onSurfaceVariant = Color(0xFFCBD5E1)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = RoyalBlue,
-    secondary = ChampagneGold,
-    tertiary = DeepSlate,
-    background = PlatinumGrey,       // Changed from IceWhite to PlatinumGrey
-    surface = CloudWhite,            // Changed from PureWhite to CloudWhite
-    surfaceVariant = CardGrey,       // Darker cards
+    primary = CharcoalGrey,
+    secondary = AmberAccent,
+    tertiary = Color(0xFF64748B),
+    background = IvoryWhite,
+    surface = PureWhite,
+    surfaceVariant = SilverGrey,
+    surfaceContainerHigh = PureWhite,
+    primaryContainer = CharcoalGrey.copy(alpha = 0.06f),
     onPrimary = Color.White,
-    onSecondary = Color.Black,
-    onBackground = DeepSlate,        // Darker text
-    onSurface = DeepSlate,           // Darker text
-    onSurfaceVariant = DeepSlate
+    onSecondary = Color.White,
+    onBackground = InkBlack,
+    onSurface = InkBlack,
+    onSurfaceVariant = Color(0xFF475569)
 )
+
+private val ChampagneGoldLocal = Color(0xFFE8D5B7)
+
 
 @Composable
 fun ShiftVaultTheme(

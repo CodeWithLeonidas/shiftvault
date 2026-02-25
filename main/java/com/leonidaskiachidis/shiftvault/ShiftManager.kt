@@ -16,6 +16,8 @@ class ShiftManager(private val context: Context) {
     private val SHIFTS_KEY = stringPreferencesKey("saved_shifts_map")
     private val TEMPLATES_KEY = stringPreferencesKey("custom_shift_templates")
 
+    private val CURRENCY_KEY = stringPreferencesKey("selected_currency")
+
     // --- CALENDAR SHIFTS (Updated to List) ---
     suspend fun saveShifts(shifts: Map<LocalDate, List<Shift>>) {
         val jsonString = Json.encodeToString(shifts.mapKeys { it.key.toString() })
@@ -36,11 +38,22 @@ class ShiftManager(private val context: Context) {
         }
     }
 
+    val getCurrency: Flow<String> = context.dataStore.data
+        .map { preferences ->
+            preferences[CURRENCY_KEY] ?: "EUR"
+        }
+
     // --- TEMPLATES (NEW) ---
     suspend fun saveTemplates(templates: List<Shift>) {
         val jsonString = Json.encodeToString(templates)
         context.dataStore.edit { preferences ->
             preferences[TEMPLATES_KEY] = jsonString
+        }
+    }
+
+    suspend fun saveCurrency(code: String) {
+        context.dataStore.edit { preferences ->
+            preferences[CURRENCY_KEY] = code
         }
     }
 
