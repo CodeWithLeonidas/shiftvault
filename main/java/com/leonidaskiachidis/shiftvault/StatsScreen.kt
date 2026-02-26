@@ -12,9 +12,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.OfflineBolt
+import androidx.compose.material.icons.filled.WatchLater
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -69,7 +74,7 @@ fun StatsScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = "Statistics",
                             style = MaterialTheme.typography.headlineLarge,
@@ -167,13 +172,13 @@ fun StatsScreen(
                         MetricTile(
                             label = "Total Hours",
                             value = StatsHelper.formatHours(stats.totalHours),
-                            icon = Icons.Default.DateRange,
+                            icon = Icons.Default.WatchLater,
                             modifier = Modifier.weight(1f)
                         )
                         MetricTile(
                             label = "Avg / Shift",
                             value = StatsHelper.formatHours(stats.averageHoursPerShift),
-                            icon = Icons.Default.Info,
+                            icon = Icons.Default.HourglassBottom,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -188,8 +193,8 @@ fun StatsScreen(
                         MetricTile(
                             label = "Holidays",
                             value = "${stats.holidayDays}",
-                            icon = Icons.Default.Info,
-                            tintColor = Color(0xFFE91E63),
+                            icon = Icons.Default.BatteryChargingFull,
+                            tintColor = Color(0xFF4CAF50),
                             modifier = Modifier.weight(1f)
                         )
                     }

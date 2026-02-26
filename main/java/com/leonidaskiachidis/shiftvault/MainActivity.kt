@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.HorizontalDivider
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,7 +35,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.leonidaskiachidis.shiftvault.ui.theme.ElectricViolet
-import com.leonidaskiachidis.shiftvault.ui.theme.MidnightBlue
 import com.leonidaskiachidis.shiftvault.ui.theme.MutedText
 import com.leonidaskiachidis.shiftvault.ui.theme.ShiftVaultTheme
 import androidx.compose.animation.core.tween
@@ -42,18 +43,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.size
@@ -80,14 +80,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.PendingActions
-import androidx.compose.material.icons.filled.WatchLater
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.PendingActions
-import androidx.compose.material.icons.outlined.WatchLater
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import com.leonidaskiachidis.shiftvault.ui.theme.ChampagneGold
 import kotlinx.coroutines.launch
+import kotlin.toString
 
 
 class MainActivity : ComponentActivity() {
@@ -103,7 +102,7 @@ class MainActivity : ComponentActivity() {
             val systemDark = isSystemInDarkTheme()
             var isDarkTheme by remember { mutableStateOf(systemDark) }
 
-// This loads the currency from your persistent storage
+            // This loads the currency from your persistent storage
             val selectedCurrencyCode by shiftManager.getCurrency.collectAsState(initial = "EUR")
 
             // 2. Pass this state to your Theme wrapper
@@ -124,67 +123,40 @@ class MainActivity : ComponentActivity() {
                     ) {
                         composable(
                             route = Screen.Vault.route,
-                            // Replace all your enter/exit/pop transitions with this unified style:
                             enterTransition = {
-                                scaleIn(
-                                    initialScale = 0.92f,
-                                    animationSpec = tween(350, easing = EaseOutBack) // "Playful" bounce
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             exitTransition = {
-                                scaleOut(
-                                    targetScale = 1.05f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popEnterTransition = {
-                                scaleIn(
-                                    initialScale = 1.05f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popExitTransition = {
-                                scaleOut(
-                                    targetScale = 0.92f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             }
-                        )
-                        {
+                        ) {
                             MainScreen(
                                 onSettingsClick = { navController.navigate(Screen.Settings.route) },
                                 onCreateCustomClick = { date ->
                                     navController.navigate(Screen.CustomShift.createRoute(date.toString()))
-                                },
-                                onStatsClick = { navController.navigate(Screen.Stats.route) }  // NEW
+                                }
                             )
                         }
 
                         composable(
                             route = Screen.Templates.route,
                             enterTransition = {
-                                scaleIn(
-                                    initialScale = 0.92f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             exitTransition = {
-                                scaleOut(
-                                    targetScale = 1.05f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popEnterTransition = {
-                                scaleIn(
-                                    initialScale = 1.05f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popExitTransition = {
-                                scaleOut(
-                                    targetScale = 0.92f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             }
                         ) {
                             val context = androidx.compose.ui.platform.LocalContext.current
@@ -202,28 +174,16 @@ class MainActivity : ComponentActivity() {
                         composable(
                             route = Screen.Stats.route,
                             enterTransition = {
-                                scaleIn(
-                                    initialScale = 0.92f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             exitTransition = {
-                                scaleOut(
-                                    targetScale = 1.05f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popEnterTransition = {
-                                scaleIn(
-                                    initialScale = 1.05f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popExitTransition = {
-                                scaleOut(
-                                    targetScale = 0.92f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             }
                         ) {
                             var savedShifts by remember { mutableStateOf(mapOf<java.time.LocalDate, List<Shift>>()) }
@@ -235,54 +195,105 @@ class MainActivity : ComponentActivity() {
                             }
 
                             StatsScreen(
-                                savedShifts = savedShifts, // Passing your shifts map
+                                savedShifts = savedShifts,
                                 onBackClick = { navController.popBackStack() },
-                                currencyCode = selectedCurrencyCode // PASSING THE DYNAMIC CURRENCY
+                                currencyCode = selectedCurrencyCode
                             )
                         }
-
 
 
                         composable(
                             route = Screen.Settings.route,
                             enterTransition = {
-                                scaleIn(
-                                    initialScale = 0.92f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             exitTransition = {
-                                scaleOut(
-                                    targetScale = 1.05f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popEnterTransition = {
-                                scaleIn(
-                                    initialScale = 1.05f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
+                                NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
                             },
                             popExitTransition = {
-                                scaleOut(
-                                    targetScale = 0.92f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
+                                NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
                             }
                         ) {
-                            // 1. Create a state to hold shifts for the export
                             var savedShifts by remember { mutableStateOf(mapOf<java.time.LocalDate, List<Shift>>()) }
-
-                            // 2. Load them from the manager
                             LaunchedEffect(Unit) {
                                 shiftManager.getShifts.collect { loadedShifts ->
                                     savedShifts = loadedShifts
                                 }
                             }
+
+                            var pendingImportJson by remember { mutableStateOf<String?>(null) }
+                            var backupJsonToWrite by remember { mutableStateOf<String?>(null) }
+
+                            // PDF export launcher
+                            val pdfExportLauncher = rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.CreateDocument("application/pdf")
+                            ) { uri ->
+                                if (uri != null) {
+                                    val outputStream = context.contentResolver.openOutputStream(uri)
+                                    if (outputStream != null) {
+                                        ExportHelper.exportShiftsToPdf(context, savedShifts, outputStream)
+                                    } else {
+                                        Toast.makeText(context, "Failed to open file for writing", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+
+                            // Excel export launcher
+                            val excelExportLauncher = rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                            ) { uri ->
+                                if (uri != null) {
+                                    val outputStream = context.contentResolver.openOutputStream(uri)
+                                    if (outputStream != null) {
+                                        ExportHelper.exportShiftsToExcel(context, savedShifts, outputStream)
+                                    } else {
+                                        Toast.makeText(context, "Failed to open file for writing", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+
+                            val exportLauncher = rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.CreateDocument("application/json")
+                            ) { uri ->
+                                if (uri != null && backupJsonToWrite != null) {
+                                    val success = BackupHelper.writeToUri(context, uri, backupJsonToWrite!!)
+                                    if (success) {
+                                        Toast.makeText(context, "Backup saved successfully!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Failed to save backup", Toast.LENGTH_SHORT).show()
+                                    }
+                                    backupJsonToWrite = null
+                                }
+                            }
+
+                            val importLauncher = rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.OpenDocument()
+                            ) { uri ->
+                                if (uri != null) {
+                                    val jsonString = BackupHelper.readFromUri(context, uri)
+                                    if (jsonString == null) {
+                                        Toast.makeText(context, "Failed to read file", Toast.LENGTH_SHORT).show()
+                                        return@rememberLauncherForActivityResult
+                                    }
+                                    val backupData = BackupHelper.deserialize(jsonString)
+                                    if (backupData == null) {
+                                        Toast.makeText(context, "Invalid backup file format", Toast.LENGTH_SHORT).show()
+                                        return@rememberLauncherForActivityResult
+                                    }
+                                    if (backupData.version > 1) {
+                                        Toast.makeText(context, "Incompatible backup version (v${backupData.version}). Please update the app.", Toast.LENGTH_LONG).show()
+                                        return@rememberLauncherForActivityResult
+                                    }
+                                    pendingImportJson = jsonString
+                                }
+                            }
+
                             SettingsScreen(
                                 isDarkTheme = isDarkTheme,
                                 onThemeChange = { isDark -> isDarkTheme = isDark },
-                                // ADD THESE TWO LINES:
                                 selectedCurrencyCode = selectedCurrencyCode,
                                 onCurrencyChange = { newCode ->
                                     scope.launch {
@@ -290,9 +301,56 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onBackClick = { navController.popBackStack() },
-                                onExportPdf = { ExportHelper.exportShiftsToPdf(context, savedShifts) },
+                                onExportPdf = {
+                                    pdfExportLauncher.launch("ShiftReport_${System.currentTimeMillis()}.pdf")
+                                },
+                                onExportExcel = {
+                                    excelExportLauncher.launch("ShiftReport_${System.currentTimeMillis()}.xlsx")
+                                },
+                                onBackupExport = {
+                                    scope.launch {
+                                        try {
+                                            val backupData = shiftManager.getAllDataForBackup()
+                                            val jsonStr = BackupHelper.serialize(backupData)
+                                            backupJsonToWrite = jsonStr
+                                            val fileName = BackupHelper.generateBackupFileName()
+                                            exportLauncher.launch(fileName)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                onBackupImport = {
+                                    importLauncher.launch(arrayOf("application/json"))
+                                },
+                                backupImportPendingJson = pendingImportJson,
+                                onConfirmImport = {
+                                    val jsonStr = pendingImportJson
+                                    pendingImportJson = null
+                                    if (jsonStr != null) {
+                                        scope.launch {
+                                            try {
+                                                val backupData = BackupHelper.deserialize(jsonStr)
+                                                if (backupData != null) {
+                                                    shiftManager.restoreFromBackup(backupData)
+                                                    Toast.makeText(context, "Data restored successfully!", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    Toast.makeText(context, "Restore failed: invalid data", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Restore failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                },
+                                onDismissImport = {
+                                    pendingImportJson = null
+                                }
                             )
                         }
+
+
+
 
                         composable(
                             route = Screen.CustomShift.route,
@@ -302,35 +360,14 @@ class MainActivity : ComponentActivity() {
                                     type = NavType.IntType; defaultValue = -1
                                 }
                             ),
-                            enterTransition = {
-                                scaleIn(
-                                    initialScale = 0.92f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
-                            },
-                            exitTransition = {
-                                scaleOut(
-                                    targetScale = 1.05f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
-                            },
-                            popEnterTransition = {
-                                scaleIn(
-                                    initialScale = 1.05f,
-                                    animationSpec = tween(350, easing = EaseOutBack)
-                                ) + fadeIn(animationSpec = tween(300))
-                            },
-                            popExitTransition = {
-                                scaleOut(
-                                    targetScale = 0.92f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween(250))
-                            }
+                            enterTransition = { NavigationTransitions.customShiftEnter },
+                            exitTransition = { NavigationTransitions.customShiftExit },
+                            popEnterTransition = { NavigationTransitions.customShiftEnter },
+                            popExitTransition = { NavigationTransitions.customShiftExit }
                         ) { backStackEntry ->
                             val dateString = backStackEntry.arguments?.getString("date")
                             val date = if (dateString == "none") null else java.time.LocalDate.parse(dateString)
                             val templateIndex = backStackEntry.arguments?.getInt("templateIndex") ?: -1
-                            val context = androidx.compose.ui.platform.LocalContext.current
 
                             CustomShiftScreen(
                                 selectedDate = date,
@@ -341,6 +378,7 @@ class MainActivity : ComponentActivity() {
                                 onSaveFinished = { navController.popBackStack() }
                             )
                         }
+
                     }
 
 
@@ -385,12 +423,12 @@ fun BottomNavigationBar(
 
     AnimatedVisibility(
         visible = isVisible,
-        enter = slideInHorizontally(
-            initialOffsetX = { it },
-            animationSpec = tween(400, easing = EaseOutBack)
-        ) + fadeIn(animationSpec = tween(300)),
-        exit = slideOutHorizontally(
-            targetOffsetX = { it },
+        enter = slideInVertically(
+            initialOffsetY = { fullHeight -> fullHeight },
+            animationSpec = tween(300, easing = FastOutSlowInEasing)
+        ) + fadeIn(animationSpec = tween(250)),
+        exit = slideOutVertically(
+            targetOffsetY = { fullHeight -> fullHeight },
             animationSpec = tween(300, easing = FastOutSlowInEasing)
         ) + fadeOut(animationSpec = tween(250))
     ) {

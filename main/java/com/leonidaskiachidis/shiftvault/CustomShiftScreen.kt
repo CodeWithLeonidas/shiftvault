@@ -1,10 +1,7 @@
 package com.leonidaskiachidis.shiftvault
 
-import android.R.attr.contentDescription
-import android.R.attr.label
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -14,9 +11,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,33 +18,36 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.leonidaskiachidis.shiftvault.ui.theme.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.ui.tooling.preview.Preview
 import java.time.LocalDate
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.ui.graphics.graphicsLayer
+import kotlin.collections.get
+import kotlin.compareTo
+import kotlin.text.chunked
+import kotlin.text.forEach
 import kotlin.text.format
+import kotlin.text.toFloat
+import kotlin.text.toInt
+import kotlin.text.toLong
+import kotlin.toString
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,9 +71,11 @@ fun CustomShiftScreen(
     var isAllDay by remember { mutableStateOf(false) }
     var isHoliday by remember { mutableStateOf(false) }
     var selectedColorValue by remember { mutableStateOf(Color(0xFF6366F1).toArgb().toLong()) }
+    var selectedIconName by remember { mutableStateOf<String?>(null) }
     var breakExpanded by remember { mutableStateOf(false) }
     var notesExpanded by remember { mutableStateOf(false) }
     var showColorPicker by remember { mutableStateOf(false) }
+    var showIconPicker by remember { mutableStateOf(false) }
 
     val currencySymbol = remember(currencyCode) {
         java.util.Currency.getInstance(currencyCode).getSymbol(java.util.Locale.getDefault())
@@ -91,6 +90,7 @@ fun CustomShiftScreen(
                 startTime = shift.startTime
                 endTime = shift.endTime
                 selectedColorValue = shift.colorValue
+                selectedIconName = shift.iconName
                 isHoliday = shift.isHoliday
                 hourlyRate = if (shift.hourlyRate > 0) shift.hourlyRate.toString() else ""
                 note = shift.notes
@@ -158,12 +158,127 @@ fun CustomShiftScreen(
                         )
                     }
                 },
+                actions = {
+                    // Icon picker button in TopBar
+                    Box {
+                        IconButton(
+                            onClick = { showIconPicker = true },
+                            modifier = Modifier
+                                .padding(end = 20.dp) // Increased from 8.dp to align with form
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(selectedColor.copy(alpha = 0.1f))
+                        ) {
+                            val currentIcon = getShiftIcon(selectedIconName)
+                            Icon(
+                                imageVector = currentIcon ?: Icons.Default.Category,
+                                contentDescription = "Change Icon",
+                                tint = selectedColor,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        // Icon picker dropdown
+                        DropdownMenu(
+                            expanded = showIconPicker,
+                            onDismissRequest = { showIconPicker = false },
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.surface)
+                                .padding(12.dp)
+                                .width(220.dp),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text(
+                                text = "Choose Icon",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 12.dp, start = 4.dp),
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+
+                            // "No icon" option
+                            Surface(
+                                onClick = {
+                                    selectedIconName = null
+                                    showIconPicker = false
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selectedIconName == null)
+                                    selectedColor.copy(alpha = 0.15f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .background(selectedColor)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "Color only",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (selectedIconName == null) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                    if (selectedIconName == null) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        Icon(
+                                            Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = selectedColor,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Icon grid
+                            val rows = shiftIconOptions.chunked(4)
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                rows.forEach { rowIcons ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        rowIcons.forEach { shiftIcon ->
+                                            val isSelected = selectedIconName == shiftIcon.name
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(44.dp)
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(
+                                                        if (isSelected) selectedColor.copy(alpha = 0.15f)
+                                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                                    )
+                                                    .clickable {
+                                                        selectedIconName = shiftIcon.name
+                                                        showIconPicker = false
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = shiftIcon.icon,
+                                                    contentDescription = shiftIcon.label,
+                                                    tint = if (isSelected) selectedColor
+                                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent
                 )
             )
         }
-
     ) { paddingValues ->
         Box(
             modifier = Modifier
@@ -205,7 +320,7 @@ fun CustomShiftScreen(
                             IconButton(
                                 onClick = { showColorPicker = true },
                                 modifier = Modifier
-                                    .padding(bottom = 4.dp) // Fine-tune alignment with the text field
+                                    .padding(bottom = 8.dp) // Fine-tune alignment with the text field
                                     .size(42.dp)
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(selectedColor.copy(alpha = 0.1f))
@@ -462,6 +577,7 @@ fun CustomShiftScreen(
                             startTime = finalStart,
                             endTime = finalEnd,
                             colorValue = selectedColorValue,
+                            iconName = selectedIconName,
                             isHoliday = isHoliday,
                             hourlyRate = hourlyRate.toDoubleOrNull() ?: 0.0,
                             notes = note,

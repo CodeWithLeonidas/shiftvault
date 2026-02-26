@@ -45,7 +45,7 @@ private val LightColorScheme = lightColorScheme(
     onSecondary = Color.White,
     onBackground = InkBlack,
     onSurface = InkBlack,
-    onSurfaceVariant = Color(0xFF475569)
+    onSurfaceVariant = Color(0xFF394456)
 )
 
 private val ChampagneGoldLocal = Color(0xFFE8D5B7)

@@ -86,12 +86,12 @@ fun TemplatesScreenContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.primary)
-                .padding(horizontal = 24.dp, vertical = 32.dp)
+                .padding(horizontal = 24.dp, vertical = 16.dp)
         ) {
             Column {
                 Text(
                     text = "Shift Templates",
-                    fontSize = 32.sp,
+                    fontSize = 26.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
@@ -180,6 +180,8 @@ fun EmptyTemplatesState(modifier: Modifier = Modifier) {
 @Composable
 fun TemplateItem(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
     var showDeleteDialog by remember { mutableStateOf(false) }
+    val timeDisplay = if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day" else "${shift.startTime} → ${shift.endTime}"
+    val shiftIcon = getShiftIcon(shift.iconName)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -194,14 +196,25 @@ fun TemplateItem(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
                 .padding(20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Color indicator with gradient effect
+            // Icon or Color indicator
             Box(
                 modifier = Modifier
                     .size(56.dp)
                     .background(
                         Color(shift.colorValue.toInt()),
                         RoundedCornerShape(16.dp)
-                    ))
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (shiftIcon != null) {
+                    Icon(
+                        imageVector = shiftIcon,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.width(16.dp))
 
@@ -220,20 +233,7 @@ fun TemplateItem(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = shift.startTime,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Text(
-                        text = " → ",
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-
-                    Text(
-                        text = shift.endTime,
+                        text = timeDisplay,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -305,6 +305,7 @@ fun TemplateItem(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
         )
     }
 }
+
 
 @Preview(showBackground = true)
 @Composable

@@ -9,7 +9,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
@@ -50,12 +56,21 @@ fun SettingsScreen(
     selectedCurrencyCode: String,
     onCurrencyChange: (String) -> Unit,
     onExportPdf: () -> Unit,
-    onBackClick: () -> Unit
+    onExportExcel: () -> Unit,
+    onBackClick: () -> Unit,
+    onBackupExport: () -> Unit,
+    onBackupImport: () -> Unit,
+    backupImportPendingJson: String?,
+    onConfirmImport: () -> Unit,
+    onDismissImport: () -> Unit
 ) {
     var showCurrencySheet by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    var showBackupSheet by remember { mutableStateOf(false) }
+    val backupSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
 
     val allCurrencies = remember { CurrencyHelper.getAllCurrencies() }
     val filteredCurrencies = remember(searchQuery) {
@@ -81,7 +96,7 @@ fun SettingsScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = "Settings",
                             style = MaterialTheme.typography.headlineLarge,
@@ -190,18 +205,19 @@ fun SettingsScreen(
                     icon = Icons.Default.TableChart,
                     iconTint = Color(0xFF3B82F6),
                     title = "Export to Excel",
-                    badge = "Soon",
-                    onClick = {}
+                    subtitle = "Download as spreadsheet",  // Remove badge
+                    onClick = onExportExcel  // Add this parameter
                 )
+
 
                 SlimDivider()
 
                 SettingsNavigationRow(
                     icon = Icons.Default.Save,
                     iconTint = Color(0xFF8B5CF6),
-                    title = "Backup Data",
-                    badge = "Soon",
-                    onClick = {}
+                    title = "Backup & Restore",
+                    subtitle = "Export or import your data",
+                    onClick = { showBackupSheet = true }
                 )
             }
 
@@ -412,6 +428,225 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    // ── Backup Bottom Sheet ──
+    if (showBackupSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showBackupSheet = false },
+            sheetState = backupSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {Spacer(modifier = Modifier.height(12.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(4.dp)
+                            .background(
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                                RoundedCornerShape(2.dp)
+                            )
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 40.dp)
+            ) {
+                Text(
+                    text = "Backup & Restore",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Export your data to a file or import from a previous backup",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Export Button
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF8B5CF6).copy(alpha = 0.1f),
+                    border = BorderStroke(1.dp, Color(0xFF8B5CF6).copy(alpha = 0.15f)),
+                    onClick = {
+                        scope.launch { backupSheetState.hide() }.invokeOnCompletion {
+                            if (!backupSheetState.isVisible) showBackupSheet = false
+                        }
+                        onBackupExport()
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(Color(0xFF8B5CF6).copy(alpha = 0.15f), RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Upload,
+                                contentDescription = null,
+                                tint = Color(0xFF8B5CF6),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Export Backup",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Save shifts & templates to a JSON file",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Import Button
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF3B82F6).copy(alpha = 0.1f),
+                    border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.15f)),
+                    onClick = {
+                        scope.launch { backupSheetState.hide() }.invokeOnCompletion {
+                            if (!backupSheetState.isVisible) showBackupSheet = false
+                        }
+                        onBackupImport()
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(Color(0xFF3B82F6).copy(alpha = 0.15f), RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                tint = Color(0xFF3B82F6),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Import Backup",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Restore from a previously saved file",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Import Confirmation Dialog ──
+    if (backupImportPendingJson != null) {
+        AlertDialog(
+            onDismissRequest = onDismissImport,
+            shape = RoundedCornerShape(20.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            icon = {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(Color(0xFFFEF3C7), RoundedCornerShape(14.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = Color(0xFFF59E0B),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            },
+            title = {
+                Text(
+                    text = "Replace All Data?",
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            text = {
+                Text(
+                    text = "This will permanently replace all your current shifts and templates with the data from the backup file. This action cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    textAlign = TextAlign.Center
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = onConfirmImport,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFF43F5E)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Replace Data", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = onDismissImport,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -687,7 +922,13 @@ fun SettingsScreenPreviewDark() {
             selectedCurrencyCode = "EUR",
             onCurrencyChange = {},
             onExportPdf = {},
-            onBackClick = {}
+            onBackClick = {},
+            onExportExcel = {},
+            onBackupExport = {},
+            onBackupImport = {},
+            backupImportPendingJson = null,
+            onConfirmImport = {},
+            onDismissImport = {}
         )
     }
 }
@@ -702,7 +943,13 @@ fun SettingsScreenPreviewLight() {
             selectedCurrencyCode = "EUR",
             onCurrencyChange = {},
             onExportPdf = {},
-            onBackClick = {}
+            onBackClick = {},
+            onExportExcel = {},
+            onBackupExport = {},
+            onBackupImport = {},
+            backupImportPendingJson = null,
+            onConfirmImport = {},
+            onDismissImport = {}
         )
     }
 }

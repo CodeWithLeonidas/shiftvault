@@ -47,17 +47,25 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AddToPhotos
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditCalendar
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
-
+import kotlin.compareTo
+import kotlin.text.get
+import kotlin.text.set
+import kotlin.text.toInt
+import kotlin.toString
 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -65,7 +73,6 @@ import androidx.compose.ui.text.input.KeyboardType
 fun MainScreen(
     onSettingsClick: () -> Unit,
     onCreateCustomClick: (java.time.LocalDate) -> Unit,
-    onStatsClick: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -100,6 +107,9 @@ fun MainScreen(
     var customTemplates by remember { mutableStateOf(listOf<Shift>()) }
     var lastAddedDate by remember { mutableStateOf<java.time.LocalDate?>(null) }
     var animationTrigger by remember { mutableStateOf(0) }
+    var showQuickActionsSheet by remember { mutableStateOf(false) }
+    var showShiftSelectionSheet by remember { mutableStateOf(false) }
+
 
     LaunchedEffect(Unit) {
         launch { shiftManager.getShifts.collect { savedShifts = it } }
@@ -132,6 +142,7 @@ fun MainScreen(
             ) {
                 val barColor = if (isEraserMode) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary
                 val barText = if (isEraserMode) "Eraser Mode — Tap to clear" else "Paste: ${clipboardShift?.name ?: ""}"
+
 
                 Surface(
                     modifier = Modifier
@@ -200,22 +211,38 @@ fun MainScreen(
                         color = MaterialTheme.colorScheme.primary
                     )
                     VerticalDivider(
-                        modifier = Modifier.height(28.dp),
-                        thickness = 1.dp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                            modifier = Modifier.height(28.dp),
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
                     )
                     RibbonStat(
                         value = currentMonthStats.totalShifts.toString(),
                         label = "Shifts",
                         color = MaterialTheme.colorScheme.tertiary
                     )
-//                    VerticalDivider(
-//                        modifier = Modifier.height(28.dp),
-//                        thickness = 1.dp,
-//                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-//                    )
+                    VerticalDivider(
+                        modifier = Modifier.height(28.dp),
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                    )
+                    // Quick Actions Icon Button
+                    FilledIconButton(
+                        onClick = { showQuickActionsSheet = true },
+                        modifier = Modifier.size(40.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        )
+                    ) {
+                        Icon(
+                            Icons.Default.EditCalendar,
+                            contentDescription = "Quick Actions",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
+
 
             // --- MONTH SELECTOR ---
             Surface(
@@ -336,6 +363,9 @@ fun MainScreen(
                         val dayShifts = savedShifts[dateOfCell] ?: emptyList()
                         val isAnimatingAdd = lastAddedDate == dateOfCell
                         val isToday = dateOfCell == today
+                        val isWeekend = remember(dateOfCell) {
+                            dateOfCell.dayOfWeek.value >= 6 // Saturday=6, Sunday=7
+                        }
 
                         RedesignedCalendarDayCell(
                             dayNumber = dayNumber,
@@ -344,6 +374,7 @@ fun MainScreen(
                             isAnimatingAdd = isAnimatingAdd,
                             isPasteMode = isPasteMode,
                             isEraserMode = isEraserMode,
+                            isWeekend = isWeekend,
                             onClick = {
                                 when {
                                     isEraserMode -> {
@@ -419,32 +450,6 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         }
-
-                        if (savedShifts.containsKey(date)) {
-                            Surface(
-                                onClick = {
-                                    val newMap = savedShifts - date
-                                    savedShifts = newMap
-                                    scope.launch {
-                                        shiftManager.saveShifts(newMap)
-                                        sheetState.hide()
-                                        showAddSheet = false
-                                    }
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color(0xFFD32F2F).copy(alpha = 0.1f),
-                                modifier = Modifier.size(44.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                    Icon(
-                                        Icons.Default.Delete,
-                                        contentDescription = "Clear day",
-                                        tint = Color(0xFFD32F2F),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -491,7 +496,10 @@ fun MainScreen(
                             onClick = { onAddShift(shift) },
                             onLongClick = {
                                 clipboardShift = shift
-                                scope.launch { sheetState.hide(); showAddSheet = false }
+                                scope.launch {
+                                    sheetState.hide()
+                                    showAddSheet = false
+                                }
                             }
                         )
                     }
@@ -543,6 +551,7 @@ fun MainScreen(
 
                 dayShifts.forEachIndexed { index, shift ->
                     val shiftColor = Color(shift.colorValue.toInt())
+                    val timeDisplay = if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day" else "${shift.startTime} — ${shift.endTime}"
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -571,25 +580,30 @@ fun MainScreen(
                                     color = MaterialTheme.colorScheme.onBackground
                                 )
                                 Text(
-                                    text = "${shift.startTime} — ${shift.endTime}",
+                                    text = timeDisplay,
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Surface(
-                                    onClick = {
-                                        editingShiftIndex = index
-                                        tempEditingShift = shift
-                                        showEditDialog = true
-                                    },
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                            modifier = Modifier.size(36.dp)
+                                onClick = {
+                                    editingShiftIndex = index
+                                    tempEditingShift = shift.copy()  // Create a safe copy
+                                    showEditDialog = true
+                                },
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                modifier = Modifier.size(36.dp)
                             ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                    Icon(
+                                        imageVector = Icons.Default.Visibility,
+                                        contentDescription = "View",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
                             }
-                        }
                             Spacer(modifier = Modifier.width(8.dp))
                             Surface(
                                 onClick = {
@@ -610,83 +624,315 @@ fun MainScreen(
                                 }
                             }
                         }
+                        }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Button(
-                    onClick = { showEditSheet = false; showAddSheet = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                        contentColor = MaterialTheme.colorScheme.primary
-                    ),
-                    elevation = ButtonDefaults.buttonElevation(0.dp)
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Add Another Shift", fontWeight = FontWeight.SemiBold)
+                    Button(
+                        onClick = { showEditSheet = false; showAddSheet = true },
+                        modifier = Modifier
+                            .width(220.dp)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ),
+                        elevation = ButtonDefaults.buttonElevation(0.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Add Another Shift", fontWeight = FontWeight.SemiBold)
+                    }
                 }
-            }
+
+
+
         }
     }
 
-    // --- EDIT DIALOG ---
+
+        // --- DETAIL VIEW DIALOG ---
+    // Replace the existing "DETAIL VIEW DIALOG" section with this:
+
     if (showEditDialog && tempEditingShift != null) {
         AlertDialog(
             onDismissRequest = { showEditDialog = false },
-            shape = RoundedCornerShape(24.dp),
-            title = {
-                Text("Edit Shift", fontWeight = FontWeight.Bold)
-            },
+            shape = RoundedCornerShape(28.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth(0.99f)
+                .wrapContentHeight(),
+            title = null,
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedCard(
-                            onClick = { pickingStartTime = true; showTimePicker = true },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                ) {
+                    // Header with color accent
+                    val shiftColor = Color(tempEditingShift!!.colorValue.toInt())
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(shiftColor.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                            .padding(20.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Text("Start", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(tempEditingShift!!.startTime, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(shiftColor, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = tempEditingShift!!.name,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onBackground
+                                    )
+                                    Text(
+                                        text = "Shift Details",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
+                                }
                             }
-                        }
-                        OutlinedCard(
-                            onClick = { pickingStartTime = false; showTimePicker = true },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Text("End", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(tempEditingShift!!.endTime, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Surface(
+                                onClick = { showEditDialog = false },
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Close",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
                     }
-                    OutlinedTextField(
-                        value = tempEditingShift!!.hourlyRate.toString(),
-                        onValueChange = {
-                            tempEditingShift = tempEditingShift!!.copy(hourlyRate = it.toDoubleOrNull() ?: 0.0)
-                        },
-                        label = { Text("Hourly Rate") },
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    // Time Section with visual enhancement
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(bottom = 12.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.EditCalendar,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "Schedule",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedCard(
+                                    onClick = { pickingStartTime = true; showTimePicker = true },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.outlinedCardColors(
+                                        containerColor = MaterialTheme.colorScheme.surface
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            "START",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            letterSpacing = 1.sp
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            tempEditingShift!!.startTime,
+                                            style = MaterialTheme.typography.headlineSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                // Arrow separator
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.CenterVertically)
+                                        .padding(vertical = 8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                OutlinedCard(
+                                    onClick = { pickingStartTime = false; showTimePicker = true },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.outlinedCardColors(
+                                        containerColor = MaterialTheme.colorScheme.surface
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            "END",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            letterSpacing = 1.sp
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            tempEditingShift!!.endTime,
+                                            style = MaterialTheme.typography.headlineSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Financial Details in grid
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                    OutlinedTextField(
-                        value = tempEditingShift!!.breakMinutes.toString(),
-                        onValueChange = {
-                            tempEditingShift = tempEditingShift!!.copy(breakMinutes = it.toIntOrNull() ?: 0)
-                        },
-                        label = { Text("Break (min)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    "Hourly Rate",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = tempEditingShift!!.hourlyRate.toString(),
+                                    onValueChange = {
+                                        tempEditingShift = tempEditingShift!!.copy(
+                                            hourlyRate = it.toDoubleOrNull() ?: tempEditingShift!!.hourlyRate
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    prefix = { Text("\$", fontWeight = FontWeight.Bold) },
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                    )
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    "Break Time",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = tempEditingShift!!.breakMinutes.toString(),
+                                    onValueChange = {
+                                        tempEditingShift = tempEditingShift!!.copy(
+                                            breakMinutes = it.toIntOrNull() ?: tempEditingShift!!.breakMinutes
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    suffix = { Text("min", fontSize = 12.sp) },
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Notes Section
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                "Notes",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = tempEditingShift!!.notes ?: "",
+                                onValueChange = {
+                                    tempEditingShift = tempEditingShift!!.copy(notes = it)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 100.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                placeholder = { Text("Add optional notes...", fontSize = 14.sp) },
+                                maxLines = 5,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                )
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -695,25 +941,54 @@ fun MainScreen(
                         scope.launch {
                             val date = selectedDate ?: return@launch
                             val list = savedShifts[date]?.toMutableList() ?: return@launch
-                            list[editingShiftIndex] = tempEditingShift!!
-                            val updatedMap = savedShifts + (date to list)
+                            if (editingShiftIndex in list.indices) {
+                                list[editingShiftIndex] = tempEditingShift!!
+                                val updatedMap = savedShifts + (date to list)
+                                savedShifts = updatedMap
+                                shiftManager.saveShifts(updatedMap)
+                            }
                             showEditDialog = false
                             sheetState.hide()
-                            savedShifts = updatedMap
-                            shiftManager.saveShifts(updatedMap)
                             showEditSheet = false
                         }
                     },
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showEditDialog = false }) { Text("Cancel") }
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Save Changes", fontWeight = FontWeight.SemiBold)
+                }
             }
         )
 
+        // Keep the existing time picker dialog
         if (showTimePicker) {
-            val timeState = rememberTimePickerState(initialHour = 9, initialMinute = 0, is24Hour = true)
+            val initialHour = if (pickingStartTime) {
+                tempEditingShift!!.startTime.split(":").getOrNull(0)?.toIntOrNull() ?: 9
+            } else {
+                tempEditingShift!!.endTime.split(":").getOrNull(0)?.toIntOrNull() ?: 17
+            }
+            val initialMinute = if (pickingStartTime) {
+                tempEditingShift!!.startTime.split(":").getOrNull(1)?.toIntOrNull() ?: 0
+            } else {
+                tempEditingShift!!.endTime.split(":").getOrNull(1)?.toIntOrNull() ?: 0
+            }
+
+            val timeState = rememberTimePickerState(
+                initialHour = initialHour,
+                initialMinute = initialMinute,
+                is24Hour = true
+            )
             DatePickerDialog(
                 onDismissRequest = { showTimePicker = false },
                 confirmButton = {
@@ -737,6 +1012,195 @@ fun MainScreen(
             }
         }
     }
+
+
+// --- QUICK ACTIONS BOTTOM SHEET ---
+    if (showQuickActionsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showQuickActionsSheet = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            dragHandle = {
+                Surface(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                ) {
+                    Spacer(modifier = Modifier.size(width = 40.dp, height = 4.dp))
+                }
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = "Quick Actions",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "Select a shift to paste or delete shifts in bulk",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = 20.dp)
+                )
+
+                // Bulk Actions Section
+                SheetSectionLabel("BULK ACTIONS")
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Paste Mode Card
+                    Surface(
+                        onClick = {
+                            scope.launch {
+                                sheetState.hide()
+                                showQuickActionsSheet = false
+                                // Let user select which shift to paste
+                                showShiftSelectionSheet = true
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.AddToPhotos,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Paste Shifts",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    // Eraser Mode Card
+                    Surface(
+                        onClick = {
+                            scope.launch {
+                                sheetState.hide()
+                                showQuickActionsSheet = false
+                                isEraserMode = true
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFFD32F2F).copy(alpha = 0.1f),
+                        border = BorderStroke(1.dp, Color(0xFFD32F2F).copy(alpha = 0.3f))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = null,
+                                tint = Color(0xFFD32F2F),
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Delete Shifts",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = Color(0xFFD32F2F)
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
+    }
+
+// --- SHIFT SELECTION FOR PASTE ---
+    if (showShiftSelectionSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showShiftSelectionSheet = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            dragHandle = {
+                Surface(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                ) {
+                    Spacer(modifier = Modifier.size(width = 40.dp, height = 4.dp))
+                }
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = "Select Shift to Paste",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "Tap any shift to activate paste mode",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = 20.dp)
+                )
+
+                if (customTemplates.isEmpty()) {
+                    Text(
+                        text = "No shift templates available",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 40.dp)
+                    )
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(customTemplates.size) { index ->
+                            val shift = customTemplates[index]
+                            RedesignedShiftCard(
+                                shift = shift,
+                                onClick = {
+                                    scope.launch {
+                                        clipboardShift = shift
+                                        sheetState.hide()
+                                        showShiftSelectionSheet = false
+                                    }
+                                },
+                                onLongClick = { }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
 }
 
 // ===================== COMPONENTS =====================
@@ -778,13 +1242,13 @@ private fun CreateNewCard(onClick: () -> Unit) {
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+        modifier = Modifier.defaultMinSize(minHeight = 78.dp)
     ) {
         Row(
             modifier = Modifier
                 .padding(14.dp)
-                .fillMaxWidth()
-                .height(40.dp),
+                .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -805,6 +1269,7 @@ private fun CreateNewCard(onClick: () -> Unit) {
     }
 }
 
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RedesignedShiftCard(
@@ -813,6 +1278,7 @@ fun RedesignedShiftCard(
     onLongClick: () -> Unit
 ) {
     val shiftColor = Color(shift.colorValue.toInt())
+    val timeDisplay = if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day" else "${shift.startTime} — ${shift.endTime}"
     var isPressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.93f else 1f,
@@ -851,7 +1317,7 @@ fun RedesignedShiftCard(
                     fontSize = 13.sp
                 )
                 Text(
-                    text = "${shift.startTime} — ${shift.endTime}",
+                    text = timeDisplay,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     fontSize = 10.sp
                 )
@@ -869,6 +1335,7 @@ private fun RedesignedCalendarDayCell(
     dayNumber: Int,
     dayShifts: List<Shift>,
     isToday: Boolean,
+    isWeekend: Boolean,
     isAnimatingAdd: Boolean,
     isPasteMode: Boolean,
     isEraserMode: Boolean,
@@ -887,11 +1354,12 @@ private fun RedesignedCalendarDayCell(
         ).value
     } else 1f
 
+
     val todayIndicatorColor = MaterialTheme.colorScheme.primary
-    val surfaceColor = if (isToday) {
-        todayIndicatorColor.copy(alpha = 0.12f)
-    } else {
-        MaterialTheme.colorScheme.surface
+    val surfaceColor = when {
+        isToday -> todayIndicatorColor.copy(alpha = 0.12f)
+        isWeekend -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.15f) // Weekend highlight
+        else -> MaterialTheme.colorScheme.surface
     }
 
     val borderColor = if (isToday) {
@@ -1006,8 +1474,7 @@ fun MainScreenPreview() {
     ShiftVaultTheme {
         MainScreen(
             onSettingsClick = {},
-            onCreateCustomClick = {},
-            onStatsClick = {}
+            onCreateCustomClick = {}
         )
     }
 }
