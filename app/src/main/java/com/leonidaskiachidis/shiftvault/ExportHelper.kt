@@ -18,9 +18,11 @@ package com.leonidaskiachidis.shiftvault
  *     currency formats, a frozen filtered header, and a totals row built on
  *     SUBTOTAL so it follows whatever the reader filters down to.
  *
+ *  The workbook is written by XlsxWriter, a few kilobytes of our own code,
+ *  rather than Apache POI, which added ~25 MB to the APK.
+ *
  *  Neither function touches the UI or closes the stream it was handed — both
- *  are safe to call off the main thread, which matters because POI takes a
- *  noticeable moment to spin up.
+ *  are safe to call off the main thread.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -32,20 +34,6 @@ import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.res.ResourcesCompat
-import org.apache.poi.ss.usermodel.BorderStyle
-import org.apache.poi.ss.usermodel.FillPatternType
-import org.apache.poi.ss.usermodel.HorizontalAlignment
-import org.apache.poi.ss.usermodel.VerticalAlignment
-import org.apache.poi.ss.util.CellRangeAddress
-import org.apache.poi.xddf.usermodel.chart.AxisPosition
-import org.apache.poi.xddf.usermodel.chart.BarDirection
-import org.apache.poi.xddf.usermodel.chart.ChartTypes
-import org.apache.poi.xddf.usermodel.chart.XDDFBarChartData
-import org.apache.poi.xddf.usermodel.chart.XDDFDataSourcesFactory
-import org.apache.poi.xssf.usermodel.XSSFCellStyle
-import org.apache.poi.xssf.usermodel.XSSFColor
-import org.apache.poi.xssf.usermodel.XSSFSheet
-import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.OutputStream
 import java.time.LocalDate
 import java.time.YearMonth
@@ -628,357 +616,217 @@ object ExportHelper {
     private const val XL_CARD = 0xF7F4EF
     private const val XL_WHITE = 0xFFFFFF
 
-    private fun rgb(hex: Int): XSSFColor = XSSFColor(
-        byteArrayOf(
-            ((hex shr 16) and 0xFF).toByte(),
-            ((hex shr 8) and 0xFF).toByte(),
-            (hex and 0xFF).toByte()
-        ),
-        null
-    )
+    /** Height of a table row, in points — a little air around every line. */
+    private const val XL_ROW_H = 18f
 
-    /**
-     * Builds and caches the cell styles. A workbook has a hard ceiling on
-     * styles, and the obvious "make one per cell" approach walks straight into
-     * it on a long report.
-     */
-    private class Styles(private val wb: XSSFWorkbook, private val symbol: String) {
-        val money: String = "\"$symbol\"#,##0.00"
+    /** The report's visual vocabulary, so every table in the workbook matches. */
+    private class Styles(symbol: String) {
+        val money = "\"$symbol\"#,##0.00"
         val hours = "0.00\"h\""
         val multiplier = "\"×\"0.00"
         val date = "d mmm yyyy"
         val whole = "0"
         val percent = "0.0%"
 
-        private val cache = HashMap<String, XSSFCellStyle>()
-
+        /** A table cell: thin outline rule underneath, zebra fill on alternate rows. */
         fun body(
             format: String? = null,
             alt: Boolean = false,
-            weight: Int = 400,
+            bold: Boolean = false,
             color: Int = XL_INK,
-            align: HorizontalAlignment = HorizontalAlignment.LEFT,
-            size: Int = 10,
-            fillColor: Int? = null,
-            topBorder: Boolean = false
-        ): XSSFCellStyle = cache.getOrPut("$format|$alt|$weight|$color|$align|$size|$fillColor|$topBorder") {
-            wb.createCellStyle().apply {
-                setFont(wb.createFont().apply {
-                    bold = weight >= 700
-                    fontHeightInPoints = size.toShort()
-                    fontName = "Calibri"
-                    setColor(rgb(color))
-                })
-                if (format != null) dataFormat = wb.createDataFormat().getFormat(format)
-                alignment = align
-                verticalAlignment = VerticalAlignment.CENTER
-                val bg = fillColor ?: if (alt) XL_ZEBRA else null
-                if (bg != null) {
-                    setFillForegroundColor(rgb(bg))
-                    fillPattern = FillPatternType.SOLID_FOREGROUND
-                }
-                setBorderBottom(BorderStyle.THIN)
-                setBottomBorderColor(rgb(XL_OUTLINE))
-                if (topBorder) {
-                    setBorderTop(BorderStyle.THIN)
-                    setTopBorderColor(rgb(XL_INK))
-                }
-            }
-        }
+            align: XlsxAlign = XlsxAlign.LEFT,
+            fill: Int? = null,
+            topRule: Boolean = false,
+            indent: Int = 0
+        ) = XlsxStyle(
+            bold = bold,
+            size = 10,
+            color = color,
+            fill = fill ?: if (alt) XL_ZEBRA else null,
+            bottomBorder = XL_OUTLINE,
+            topBorder = if (topRule) XL_INK else null,
+            format = format,
+            align = align,
+            indent = indent
+        )
 
-        fun plain(weight: Int, size: Int, color: Int): XSSFCellStyle =
-            cache.getOrPut("plain|$weight|$size|$color") {
-                wb.createCellStyle().apply {
-                    setFont(wb.createFont().apply {
-                        bold = weight >= 700
-                        fontHeightInPoints = size.toShort()
-                        fontName = "Calibri"
-                        setColor(rgb(color))
-                    })
-                    verticalAlignment = VerticalAlignment.CENTER
-                }
-            }
+        /** Free-standing text: titles, subtitles, section labels. */
+        fun plain(bold: Boolean, size: Int, color: Int) =
+            XlsxStyle(bold = bold, size = size, color = color)
 
-        fun header(accent: Int): XSSFCellStyle = cache.getOrPut("header|$accent") {
-            wb.createCellStyle().apply {
-                setFont(wb.createFont().apply {
-                    bold = true
-                    fontHeightInPoints = 10
-                    fontName = "Calibri"
-                    setColor(rgb(XL_WHITE))
-                })
-                setFillForegroundColor(rgb(accent))
-                fillPattern = FillPatternType.SOLID_FOREGROUND
-                alignment = HorizontalAlignment.CENTER
-                verticalAlignment = VerticalAlignment.CENTER
-            }
-        }
+        /** Column headings: white on the job profile's colour. */
+        fun header(accent: Int) = XlsxStyle(
+            bold = true, size = 10, color = XL_WHITE, fill = accent, align = XlsxAlign.CENTER
+        )
+
+        /** The closing totals row: card fill with a dark rule above. */
+        fun total(format: String? = null, bold: Boolean = true, align: XlsxAlign = XlsxAlign.RIGHT) =
+            body(format, bold = bold, align = align, fill = XL_CARD, topRule = true)
     }
 
+    /**
+     * Writes the workbook: a Summary sheet (opens first) and the full Shifts
+     * table. Built with [XlsxWorkbook], so it adds nothing to the APK beyond a
+     * few kilobytes of code.
+     */
     fun exportShiftsToExcel(
         savedShifts: Map<LocalDate, List<Shift>>,
         outputStream: OutputStream,
-        meta: ReportMeta
+        meta: ReportMeta,
+        /**
+         * The heading colour (0xRRGGBB). Normally derived from the profile;
+         * unit tests pass it directly, because the Android colour maths behind
+         * the default is stubbed out on the JVM.
+         */
+        accent: Int = ShiftColors
+            .accent(androidx.compose.ui.graphics.Color(meta.profileColorValue.toInt()), false)
+            .toArgb() and 0xFFFFFF
     ) {
-        val workbook = XSSFWorkbook()
-        try {
-            val entries = entriesOf(savedShifts)
-            val totals = Totals(entries)
-            val styles = Styles(workbook, meta.currencySymbol)
-            val accent = ShiftColors
-                .accent(androidx.compose.ui.graphics.Color(meta.profileColorValue.toInt()), false)
-                .toArgb() and 0xFFFFFF
+        val entries = entriesOf(savedShifts)
+        val totals = Totals(entries)
+        val styles = Styles(meta.currencySymbol)
 
-            val shiftsSheet = workbook.createSheet("Shifts")
-            val dataRange = writeShiftsSheet(shiftsSheet, entries, styles, accent, meta)
-
-            val summary = workbook.createSheet("Summary")
-            writeSummarySheet(summary, entries, totals, styles, accent, meta)
-
-            // Summary reads better as the first thing the file opens on.
-            workbook.setSheetOrder("Summary", 0)
-            workbook.setActiveSheet(0)
-
-            // Charts are the one piece of the OOXML surface that can misbehave
-            // on a device; a failure here must not cost the user the report.
-            if (dataRange != null) {
-                runCatching { addMonthlyChart(summary, entries, meta) }
-            }
-
-            workbook.write(outputStream)
-        } finally {
-            workbook.close()
-        }
+        val workbook = XlsxWorkbook()
+        // Summary reads better as the first thing the file opens on.
+        writeSummarySheet(workbook.sheet("Summary"), entries, totals, styles, accent, meta)
+        writeShiftsSheet(workbook.sheet("Shifts"), entries, styles, accent, meta)
+        workbook.write(outputStream)
     }
 
-    /** @return the first and last data row of the table, or null when empty. */
     private fun writeShiftsSheet(
-        sheet: XSSFSheet,
+        sheet: XlsxSheet,
         entries: List<Pair<LocalDate, Shift>>,
         s: Styles,
         accent: Int,
         meta: ReportMeta
-    ): Pair<Int, Int>? {
+    ) {
         val columns = listOf(
-            "Date" to 3000, "Day" to 1800, "Shift" to 5200, "Type" to 3000,
-            "Start" to 2000, "End" to 2000, "Break" to 2000, "Paid break" to 2600,
-            "Hours" to 2400, "Rate" to 2600, "Multiplier" to 2600, "Bonus" to 2600,
-            "Earnings" to 3000, "Location" to 4600, "Note" to 7000
+            "Date" to 11.7, "Day" to 7.0, "Shift" to 20.3, "Type" to 11.7,
+            "Start" to 7.8, "End" to 7.8, "Break" to 7.8, "Paid break" to 10.2,
+            "Hours" to 9.4, "Rate" to 10.2, "Multiplier" to 10.2, "Bonus" to 10.2,
+            "Earnings" to 11.7, "Location" to 18.0, "Note" to 27.3
         )
-        columns.forEachIndexed { i, (_, w) -> sheet.setColumnWidth(i, w) }
+        columns.forEachIndexed { i, (_, w) -> sheet.columnWidth(i, w) }
+        sheet.showGridLines = false
 
         var r = 0
-        sheet.createRow(r++).createCell(0).apply {
-            setCellValue("Earnings Report")
-            cellStyle = s.plain(800, 16, XL_INK)
-        }
-        sheet.createRow(r++).createCell(0).apply {
-            setCellValue(
-                "${meta.profileName} · ${rangeLabel(entries)} · " +
-                        "generated ${LocalDate.now().format(fullDateFmt)}"
-            )
-            cellStyle = s.plain(400, 10, XL_MUTED)
-        }
+        sheet.row(r++).height(24f).text(0, "Earnings Report", s.plain(true, 16, XL_INK))
+        sheet.row(r++).text(
+            0,
+            "${meta.profileName} · ${rangeLabel(entries)} · generated ${LocalDate.now().format(fullDateFmt)}",
+            s.plain(false, 10, XL_MUTED)
+        )
         r++
 
         val headerRow = r
-        val hr = sheet.createRow(r++)
-        hr.heightInPoints = 20f
-        columns.forEachIndexed { i, (title, _) ->
-            hr.createCell(i).apply {
-                setCellValue(title)
-                cellStyle = s.header(accent)
-            }
+        sheet.row(r++).height(22f).apply {
+            columns.forEachIndexed { i, (title, _) -> text(i, title, s.header(accent)) }
         }
+        sheet.freeze = 3 to headerRow + 1
 
         if (entries.isEmpty()) {
-            sheet.createRow(r).createCell(0).apply {
-                setCellValue("No shifts recorded for this job profile.")
-                cellStyle = s.plain(400, 10, XL_MUTED)
-            }
-            sheet.createFreezePane(3, headerRow + 1)
-            return null
+            sheet.row(r).text(0, "No shifts recorded for this job profile.", s.plain(false, 10, XL_MUTED))
+            return
         }
 
         val firstData = r
         entries.forEachIndexed { index, (date, shift) ->
             val alt = index % 2 == 1
             val worked = shift.dayType == DayType.WORKED
-            val row = sheet.createRow(r++)
-
-            row.createCell(0).apply {
-                setCellValue(date)                       // a real date, so it sorts
-                cellStyle = s.body(s.date, alt)
-            }
-            row.createCell(1).apply {
-                setCellValue(
-                    date.dayOfWeek.getDisplayName(
-                        java.time.format.TextStyle.SHORT, Locale.getDefault()
-                    )
+            sheet.row(r++).height(XL_ROW_H)
+                .date(0, date, s.body(s.date, alt))                    // a real date, so it sorts
+                .text(
+                    1,
+                    date.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.getDefault()),
+                    s.body(alt = alt, color = XL_MUTED)
                 )
-                cellStyle = s.body(alt = alt, color = XL_MUTED)
-            }
-            row.createCell(2).apply {
-                setCellValue(shift.name)
-                cellStyle = s.body(alt = alt, weight = 700)
-            }
-            row.createCell(3).apply {
-                setCellValue(typeLabel(shift))
-                cellStyle = s.body(alt = alt, color = XL_MUTED)
-            }
-            row.createCell(4).apply {
-                setCellValue(if (worked) shift.startTime else "–")
-                cellStyle = s.body(alt = alt, align = HorizontalAlignment.CENTER)
-            }
-            row.createCell(5).apply {
-                setCellValue(if (worked) shift.endTime else "–")
-                cellStyle = s.body(alt = alt, align = HorizontalAlignment.CENTER)
-            }
-            row.createCell(6).apply {
-                setCellValue(if (worked) shift.breakMinutes.toDouble() else 0.0)
-                cellStyle = s.body(s.whole, alt, align = HorizontalAlignment.RIGHT, color = XL_MUTED)
-            }
-            row.createCell(7).apply {
-                setCellValue(
+                .text(2, shift.name, s.body(alt = alt, bold = true))
+                .text(3, typeLabel(shift), s.body(alt = alt, color = XL_MUTED))
+                .text(4, if (worked) shift.startTime else "–", s.body(alt = alt, align = XlsxAlign.CENTER))
+                .text(5, if (worked) shift.endTime else "–", s.body(alt = alt, align = XlsxAlign.CENTER))
+                .number(
+                    6, if (worked) shift.breakMinutes.toDouble() else 0.0,
+                    s.body(s.whole, alt, align = XlsxAlign.RIGHT, color = XL_MUTED)
+                )
+                .text(
+                    7,
                     when {
                         !worked || shift.breakMinutes == 0 -> "–"
                         shift.paidBreak -> "Paid"
                         else -> "Unpaid"
-                    }
+                    },
+                    s.body(alt = alt, align = XlsxAlign.CENTER, color = XL_MUTED)
                 )
-                cellStyle = s.body(alt = alt, align = HorizontalAlignment.CENTER, color = XL_MUTED)
-            }
-            row.createCell(8).apply {
-                setCellValue(PayEngine.payableHours(shift))
-                cellStyle = s.body(s.hours, alt, align = HorizontalAlignment.RIGHT)
-            }
-            row.createCell(9).apply {
-                setCellValue(shift.hourlyRate)
-                cellStyle = s.body(s.money, alt, align = HorizontalAlignment.RIGHT, color = XL_MUTED)
-            }
-            row.createCell(10).apply {
-                setCellValue(PayEngine.effectiveMultiplier(shift))
-                cellStyle = s.body(s.multiplier, alt, align = HorizontalAlignment.RIGHT, color = XL_MUTED)
-            }
-            row.createCell(11).apply {
-                setCellValue(if (shift.dayType == DayType.UNPAID_LEAVE) 0.0 else shift.bonus)
-                cellStyle = s.body(s.money, alt, align = HorizontalAlignment.RIGHT, color = XL_MUTED)
-            }
-            row.createCell(12).apply {
-                setCellValue(PayEngine.earnings(shift))
-                cellStyle = s.body(s.money, alt, weight = 700, align = HorizontalAlignment.RIGHT)
-            }
-            row.createCell(13).apply {
-                setCellValue(shift.location)
-                cellStyle = s.body(alt = alt, color = XL_MUTED)
-            }
-            row.createCell(14).apply {
-                setCellValue(shift.notes)
-                cellStyle = s.body(alt = alt, color = XL_MUTED)
-            }
+                .number(8, PayEngine.payableHours(shift), s.body(s.hours, alt, align = XlsxAlign.RIGHT))
+                .number(9, shift.hourlyRate, s.body(s.money, alt, align = XlsxAlign.RIGHT, color = XL_MUTED))
+                .number(
+                    10, PayEngine.effectiveMultiplier(shift),
+                    s.body(s.multiplier, alt, align = XlsxAlign.RIGHT, color = XL_MUTED)
+                )
+                .number(
+                    11, if (shift.dayType == DayType.UNPAID_LEAVE) 0.0 else shift.bonus,
+                    s.body(s.money, alt, align = XlsxAlign.RIGHT, color = XL_MUTED)
+                )
+                .number(12, PayEngine.earnings(shift), s.body(s.money, alt, bold = true, align = XlsxAlign.RIGHT))
+                // Indented so they don't run straight on from the right-aligned
+                // earnings figure beside them.
+                .text(13, shift.location, s.body(alt = alt, color = XL_MUTED, indent = 1))
+                .text(14, shift.notes, s.body(alt = alt, color = XL_MUTED, indent = 1))
         }
         val lastData = r - 1
 
         // Totals built on SUBTOTAL rather than SUM: filter the table down to one
         // shift name or one month and the totals follow the filter.
-        val totalRow = sheet.createRow(r)
-        totalRow.heightInPoints = 18f
-        totalRow.createCell(0).apply {
-            setCellValue("TOTAL")
-            cellStyle = s.body(weight = 700, fillColor = XL_CARD, topBorder = true)
-        }
-        listOf(1, 2, 3, 4, 5, 6, 7, 13, 14).forEach { c ->
-            totalRow.createCell(c).cellStyle = s.body(fillColor = XL_CARD, topBorder = true)
-        }
-        fun subtotal(col: Int, format: String, weight: Int = 700) {
-            val letter = ('A' + col).toString()
-            totalRow.createCell(col).apply {
-                cellFormula = "SUBTOTAL(109,$letter${firstData + 1}:$letter${lastData + 1})"
-                cellStyle = s.body(
-                    format, weight = weight,
-                    align = HorizontalAlignment.RIGHT, fillColor = XL_CARD, topBorder = true
-                )
-            }
-        }
-        subtotal(8, s.hours)
-        totalRow.createCell(9).cellStyle = s.body(fillColor = XL_CARD, topBorder = true)
-        totalRow.createCell(10).cellStyle = s.body(fillColor = XL_CARD, topBorder = true)
-        subtotal(11, s.money, weight = 400)
-        subtotal(12, s.money)
+        fun subtotal(col: Int) =
+            "SUBTOTAL(109,${cellRef(firstData, col)}:${cellRef(lastData, col)})"
 
-        sheet.createFreezePane(3, headerRow + 1)
-        sheet.setAutoFilter(CellRangeAddress(headerRow, lastData, 0, columns.size - 1))
+        sheet.row(r).height(20f).apply {
+            text(0, "TOTAL", s.total(bold = true, align = XlsxAlign.LEFT))
+            listOf(1, 2, 3, 4, 5, 6, 7, 9, 10, 13, 14).forEach { blank(it, s.total()) }
+            formula(8, subtotal(8), s.total(s.hours))
+            formula(11, subtotal(11), s.total(s.money, bold = false))
+            formula(12, subtotal(12), s.total(s.money))
+        }
+
+        sheet.autoFilter = XlsxRange(headerRow, 0, lastData, columns.size - 1)
 
         // Data bars turn the hours column into a glanceable profile of the month.
-        runCatching {
-            val cf = sheet.sheetConditionalFormatting
-            val rule = cf.createConditionalFormattingRule(rgb(accent))
-            rule.dataBarFormatting?.isIconOnly = false
-            cf.addConditionalFormatting(
-                arrayOf(CellRangeAddress(firstData, lastData, 8, 8)), rule
-            )
-        }
+        sheet.dataBar(XlsxRange(firstData, 8, lastData, 8), accent)
 
-        sheet.printSetup.landscape = true
-        sheet.fitToPage = true
-        sheet.printSetup.fitWidth = 1
-        sheet.printSetup.fitHeight = 0
-        sheet.repeatingRows = CellRangeAddress(headerRow, headerRow, -1, -1)
-        sheet.footer.right = "Page &P of &N"
-        sheet.footer.left = "ShiftVault · ${meta.profileName}"
-
-        return firstData to lastData
+        sheet.landscape = true
+        sheet.fitToWidth = true
+        sheet.repeatRow = headerRow
+        sheet.footerLeft = "ShiftVault · ${meta.profileName}"
+        sheet.footerRight = "Page &P of &N"
     }
 
     private fun writeSummarySheet(
-        sheet: XSSFSheet,
+        sheet: XlsxSheet,
         entries: List<Pair<LocalDate, Shift>>,
         totals: Totals,
         s: Styles,
         accent: Int,
         meta: ReportMeta
     ) {
-        listOf(5200, 3200, 3200, 3200, 3400).forEachIndexed { i, w -> sheet.setColumnWidth(i, w) }
+        listOf(20.3, 12.5, 12.5, 12.5, 13.3).forEachIndexed { i, w -> sheet.columnWidth(i, w) }
+        sheet.showGridLines = false
 
         var r = 0
-        sheet.createRow(r++).apply { heightInPoints = 24f }.createCell(0).apply {
-            setCellValue("Earnings Report")
-            cellStyle = s.plain(800, 18, XL_INK)
-        }
-        sheet.createRow(r++).createCell(0).apply {
-            setCellValue("${meta.profileName} · ${rangeLabel(entries)}")
-            cellStyle = s.plain(700, 11, accent)
-        }
-        sheet.createRow(r++).createCell(0).apply {
-            setCellValue("Generated ${LocalDate.now().format(fullDateFmt)}")
-            cellStyle = s.plain(400, 10, XL_MUTED)
-        }
+        sheet.row(r++).height(28f).text(0, "Earnings Report", s.plain(true, 18, XL_INK))
+        sheet.row(r++).height(18f).text(0, "${meta.profileName} · ${rangeLabel(entries)}", s.plain(true, 11, accent))
+        sheet.row(r++).text(0, "Generated ${LocalDate.now().format(fullDateFmt)}", s.plain(false, 10, XL_MUTED))
         r++
 
         fun section(title: String) {
-            sheet.createRow(r++).createCell(0).apply {
-                setCellValue(title)
-                cellStyle = s.plain(700, 11, XL_INK)
-            }
+            sheet.row(r++).height(20f).text(0, title, s.plain(true, 11, XL_INK))
         }
 
         section("AT A GLANCE")
-        fun kpi(label: String, value: Double, format: String?, emphasise: Boolean = false) {
-            val row = sheet.createRow(r++)
-            row.heightInPoints = 18f
-            row.createCell(0).apply {
-                setCellValue(label)
-                cellStyle = s.body(fillColor = if (emphasise) XL_CARD else null)
-            }
-            row.createCell(1).apply {
-                setCellValue(value)
-                cellStyle = s.body(
-                    format,
-                    weight = if (emphasise) 700 else 400,
-                    align = HorizontalAlignment.RIGHT,
-                    fillColor = if (emphasise) XL_CARD else null
-                )
-            }
+        fun kpi(label: String, value: Double, format: String, emphasise: Boolean = false) {
+            val fill = if (emphasise) XL_CARD else null
+            sheet.row(r++).height(20f)
+                .text(0, label, s.body(fill = fill, bold = emphasise))
+                .number(1, value, s.body(format, bold = emphasise, align = XlsxAlign.RIGHT, fill = fill))
         }
         kpi("Shifts worked", totals.shiftsWorked.toDouble(), s.whole)
         kpi("Paid hours", totals.hours, s.hours)
@@ -989,60 +837,38 @@ object ExportHelper {
 
         // ── By month ──
         section("BY MONTH")
-        val monthHeader = sheet.createRow(r++)
-        monthHeader.heightInPoints = 18f
-        listOf("Month", "Shifts", "Hours", "Bonuses", "Earnings").forEachIndexed { i, title ->
-            monthHeader.createCell(i).apply {
-                setCellValue(title)
-                cellStyle = s.header(accent)
-            }
+        sheet.row(r++).height(20f).apply {
+            listOf("Month", "Shifts", "Hours", "Bonuses", "Earnings")
+                .forEachIndexed { i, title -> text(i, title, s.header(accent)) }
         }
 
         val byMonth = entries.groupBy { YearMonth.from(it.first) }.toList().sortedBy { it.first }
         val monthFirst = r
         byMonth.forEachIndexed { index, (month, list) ->
             val alt = index % 2 == 1
-            val row = sheet.createRow(r++)
-            row.createCell(0).apply {
-                setCellValue(month.atDay(1).format(monthFmt))
-                cellStyle = s.body(alt = alt, weight = 700)
-            }
-            row.createCell(1).apply {
-                setCellValue(list.count { PayEngine.isWorked(it.second) }.toDouble())
-                cellStyle = s.body(s.whole, alt, align = HorizontalAlignment.RIGHT)
-            }
-            row.createCell(2).apply {
-                setCellValue(list.sumOf { PayEngine.payableHours(it.second) })
-                cellStyle = s.body(s.hours, alt, align = HorizontalAlignment.RIGHT)
-            }
-            row.createCell(3).apply {
-                setCellValue(
-                    list.sumOf {
-                        if (it.second.dayType == DayType.UNPAID_LEAVE) 0.0 else it.second.bonus
-                    }
+            sheet.row(r++).height(XL_ROW_H)
+                .text(0, month.atDay(1).format(monthFmt), s.body(alt = alt, bold = true))
+                .number(
+                    1, list.count { PayEngine.isWorked(it.second) }.toDouble(),
+                    s.body(s.whole, alt, align = XlsxAlign.RIGHT)
                 )
-                cellStyle = s.body(s.money, alt, align = HorizontalAlignment.RIGHT, color = XL_MUTED)
-            }
-            row.createCell(4).apply {
-                setCellValue(list.sumOf { PayEngine.earnings(it.second) })
-                cellStyle = s.body(s.money, alt, weight = 700, align = HorizontalAlignment.RIGHT)
-            }
+                .number(2, list.sumOf { PayEngine.payableHours(it.second) }, s.body(s.hours, alt, align = XlsxAlign.RIGHT))
+                .number(
+                    3,
+                    list.sumOf { if (it.second.dayType == DayType.UNPAID_LEAVE) 0.0 else it.second.bonus },
+                    s.body(s.money, alt, align = XlsxAlign.RIGHT, color = XL_MUTED)
+                )
+                .number(
+                    4, list.sumOf { PayEngine.earnings(it.second) },
+                    s.body(s.money, alt, bold = true, align = XlsxAlign.RIGHT)
+                )
         }
         if (byMonth.isNotEmpty()) {
             val monthLast = r - 1
-            val row = sheet.createRow(r++)
-            row.createCell(0).apply {
-                setCellValue("Total")
-                cellStyle = s.body(weight = 700, fillColor = XL_CARD, topBorder = true)
-            }
-            listOf(1 to s.whole, 2 to s.hours, 3 to s.money, 4 to s.money).forEach { (col, fmt) ->
-                val letter = ('A' + col).toString()
-                row.createCell(col).apply {
-                    cellFormula = "SUM($letter${monthFirst + 1}:$letter${monthLast + 1})"
-                    cellStyle = s.body(
-                        fmt, weight = 700,
-                        align = HorizontalAlignment.RIGHT, fillColor = XL_CARD, topBorder = true
-                    )
+            sheet.row(r++).height(20f).apply {
+                text(0, "Total", s.total(bold = true, align = XlsxAlign.LEFT))
+                listOf(1 to s.whole, 2 to s.hours, 3 to s.money, 4 to s.money).forEach { (col, fmt) ->
+                    formula(col, "SUM(${cellRef(monthFirst, col)}:${cellRef(monthLast, col)})", s.total(fmt))
                 }
             }
         }
@@ -1050,90 +876,32 @@ object ExportHelper {
 
         // ── By shift ──
         section("BY SHIFT")
-        val shiftHeader = sheet.createRow(r++)
-        shiftHeader.heightInPoints = 18f
-        listOf("Shift", "Times worked", "Hours", "Earnings", "Share").forEachIndexed { i, title ->
-            shiftHeader.createCell(i).apply {
-                setCellValue(title)
-                cellStyle = s.header(accent)
-            }
+        sheet.row(r++).height(20f).apply {
+            listOf("Shift", "Times worked", "Hours", "Earnings", "Share")
+                .forEachIndexed { i, title -> text(i, title, s.header(accent)) }
         }
 
+        val byShiftFirst = r
         entries.groupBy { it.second.name }
             .map { (name, list) -> Triple(name, list, list.sumOf { PayEngine.earnings(it.second) }) }
             .sortedByDescending { it.third }
             .forEachIndexed { index, (name, list, earned) ->
                 val alt = index % 2 == 1
-                val row = sheet.createRow(r++)
-                row.createCell(0).apply {
-                    setCellValue(name)
-                    cellStyle = s.body(alt = alt, weight = 700)
-                }
-                row.createCell(1).apply {
-                    setCellValue(list.size.toDouble())
-                    cellStyle = s.body(s.whole, alt, align = HorizontalAlignment.RIGHT)
-                }
-                row.createCell(2).apply {
-                    setCellValue(list.sumOf { PayEngine.payableHours(it.second) })
-                    cellStyle = s.body(s.hours, alt, align = HorizontalAlignment.RIGHT)
-                }
-                row.createCell(3).apply {
-                    setCellValue(earned)
-                    cellStyle = s.body(s.money, alt, weight = 700, align = HorizontalAlignment.RIGHT)
-                }
-                row.createCell(4).apply {
-                    setCellValue(if (totals.earnings > 0.0) earned / totals.earnings else 0.0)
-                    cellStyle = s.body(s.percent, alt, align = HorizontalAlignment.RIGHT, color = XL_MUTED)
-                }
+                sheet.row(r++).height(XL_ROW_H)
+                    .text(0, name, s.body(alt = alt, bold = true))
+                    .number(1, list.size.toDouble(), s.body(s.whole, alt, align = XlsxAlign.RIGHT))
+                    .number(2, list.sumOf { PayEngine.payableHours(it.second) }, s.body(s.hours, alt, align = XlsxAlign.RIGHT))
+                    .number(3, earned, s.body(s.money, alt, bold = true, align = XlsxAlign.RIGHT))
+                    .number(
+                        4, if (totals.earnings > 0.0) earned / totals.earnings else 0.0,
+                        s.body(s.percent, alt, align = XlsxAlign.RIGHT, color = XL_MUTED)
+                    )
             }
+        // The share column doubles as a bar chart, standing in for the old
+        // embedded chart.
+        if (r > byShiftFirst) sheet.dataBar(XlsxRange(byShiftFirst, 4, r - 1, 4), accent)
 
-        sheet.printSetup.fitWidth = 1
-        sheet.fitToPage = true
-        sheet.footer.left = "ShiftVault · ${meta.profileName}"
-    }
-
-    /**
-     * A live column chart of earnings per month, plotted from a small block of
-     * cells parked off to the right so the chart stays linked to real data
-     * rather than being baked in as a picture.
-     */
-    private fun addMonthlyChart(
-        sheet: XSSFSheet,
-        entries: List<Pair<LocalDate, Shift>>,
-        meta: ReportMeta
-    ) {
-        val byMonth = entries.groupBy { YearMonth.from(it.first) }.toList().sortedBy { it.first }
-        if (byMonth.size < 2) return
-
-        val dataCol = 20     // column U — clear of both the print area and the chart
-        byMonth.forEachIndexed { index, (month, list) ->
-            val row = sheet.getRow(index) ?: sheet.createRow(index)
-            row.createCell(dataCol).setCellValue(month.atDay(1).format(monthYearShortFmt))
-            row.createCell(dataCol + 1).setCellValue(list.sumOf { PayEngine.earnings(it.second) })
-        }
-        sheet.setColumnHidden(dataCol, true)
-        sheet.setColumnHidden(dataCol + 1, true)
-
-        val drawing = sheet.createDrawingPatriarch()
-        val anchor = drawing.createAnchor(0, 0, 0, 0, 6, 1, 14, 20)
-        val chart = drawing.createChart(anchor)
-        chart.setTitleText("Earnings by month · ${meta.profileName}")
-        chart.setTitleOverlay(false)
-
-        val bottom = chart.createCategoryAxis(AxisPosition.BOTTOM)
-        val left = chart.createValueAxis(AxisPosition.LEFT)
-        left.crosses = org.apache.poi.xddf.usermodel.chart.AxisCrosses.AUTO_ZERO
-
-        val categories = XDDFDataSourcesFactory.fromStringCellRange(
-            sheet, CellRangeAddress(0, byMonth.size - 1, dataCol, dataCol)
-        )
-        val values = XDDFDataSourcesFactory.fromNumericCellRange(
-            sheet, CellRangeAddress(0, byMonth.size - 1, dataCol + 1, dataCol + 1)
-        )
-
-        val data = chart.createData(ChartTypes.BAR, bottom, left)
-        data.addSeries(categories, values).setTitle("Earnings", null)
-        (data as XDDFBarChartData).barDirection = BarDirection.COL
-        chart.plot(data)
+        sheet.fitToWidth = true
+        sheet.footerLeft = "ShiftVault · ${meta.profileName}"
     }
 }

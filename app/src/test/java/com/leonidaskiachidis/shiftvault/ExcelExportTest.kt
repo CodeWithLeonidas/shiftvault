@@ -142,13 +142,112 @@ class ExcelExportTest {
     }
 
     @Test
-    fun `summary carries a live chart once there is more than one month`() {
-        writeAndReopen(sampleShifts()).use { wb ->
-            val summary = wb.getSheet("Summary")
+    fun `totals calculate to the same figures as PayEngine`() {
+        val shifts = sampleShifts()
+        writeAndReopen(shifts).use { wb ->
+            val evaluator = wb.creationHelper.createFormulaEvaluator()
+            val all = shifts.values.flatten()
+
+            val totalRow = wb.getSheet("Shifts").getRow(8)
             assertEquals(
-                "chart should be generated, not swallowed by its runCatching",
-                1, summary.createDrawingPatriarch().charts.size
+                all.sumOf { PayEngine.earnings(it) },
+                evaluator.evaluate(totalRow.getCell(12)).numberValue, 0.0001
             )
+            assertEquals(
+                all.sumOf { PayEngine.payableHours(it) },
+                evaluator.evaluate(totalRow.getCell(8)).numberValue, 0.0001
+            )
+        }
+    }
+
+    @Test
+    fun `report is styled - accent header, formats, zebra rows and data bars`() {
+        writeAndReopen(sampleShifts()).use { wb ->
+            val sheet = wb.getSheet("Shifts")
+
+            val header = sheet.getRow(3).getCell(0).cellStyle
+            assertTrue("header text is bold", wb.getFontAt(header.fontIndex).bold)
+            assertNotNull("header has the profile colour as fill", header.fillForegroundColorColor)
+
+            val earnings = sheet.getRow(4).getCell(12).cellStyle
+            assertEquals("\"€\"#,##0.00", earnings.dataFormatString)
+            assertEquals("0.00\"h\"", sheet.getRow(4).getCell(8).cellStyle.dataFormatString)
+
+            // Row 5 is the second data row, so it carries the zebra fill.
+            assertNotNull(sheet.getRow(5).getCell(2).cellStyle.fillForegroundColorColor)
+
+            assertEquals(1, sheet.sheetConditionalFormatting.numConditionalFormattings)
+            assertTrue("gridlines hidden for a cleaner report", !sheet.isDisplayGridlines)
+        }
+    }
+
+    /**
+     * Not a check — a preview. Writes a realistic report to
+     * app/build/reports/sample-earnings-report.xlsx on every test run, so the
+     * workbook's design can be opened in Excel without building the app.
+     */
+    @Test
+    fun `write a sample report for previewing the design`() {
+        val job = JobProfile.DEFAULT_ID
+        fun day(d: LocalDate, vararg s: Shift) = d to s.toList()
+        val morning = Shift(
+            name = "Πρωινή βάρδια", startTime = "07:00", endTime = "15:00", colorValue = 0xFF3F7DDE,
+            hourlyRate = 9.5, breakMinutes = 30, location = "Κεντρικό κατάστημα", jobId = job
+        )
+        val night = Shift(
+            name = "Νυχτερινή", startTime = "23:00", endTime = "07:00", colorValue = 0xFFE04B4B,
+            hourlyRate = 9.5, payMultiplier = 1.25, bonus = 5.0, jobId = job
+        )
+        val sunday = morning.copy(name = "Κυριακή", payMultiplier = 1.75, notes = "Αργία")
+        val leave = Shift(
+            name = "Κανονική άδεια", startTime = "00:00", endTime = "23:59", colorValue = 0xFF8AAE22,
+            hourlyRate = 9.5, dayType = DayType.PAID_LEAVE, paidLeaveHours = 8.0, jobId = job
+        )
+        val shifts = buildMap {
+            var d = LocalDate.of(2026, 8, 3)
+            repeat(40) { i ->
+                val entry = when {
+                    d.dayOfWeek == java.time.DayOfWeek.SUNDAY -> day(d, sunday)
+                    d.dayOfWeek == java.time.DayOfWeek.SATURDAY -> null
+                    i % 9 == 4 -> day(d, leave)
+                    i % 3 == 2 -> day(d, night)
+                    else -> day(d, morning)
+                }
+                entry?.let { put(it.first, it.second) }
+                d = d.plusDays(1)
+            }
+        }
+        val out = java.io.File("build/reports/sample-earnings-report.xlsx")
+        out.parentFile?.mkdirs()
+        out.outputStream().use {
+            ExportHelper.exportShiftsToExcel(
+                shifts, it, meta.copy(profileName = "Καφετέρια Λιμάνι"),
+                accent = 0x3F7DDE // the profile blue, as the app would compute it
+            )
+        }
+        assertTrue(out.length() > 2_000)
+    }
+
+    @Test
+    fun `awkward text survives - ampersands, markup, Greek and line breaks`() {
+        val tricky = mapOf(
+            LocalDate.of(2026, 3, 2) to listOf(
+                Shift(
+                    name = "Καφετέρια & <Bar>", startTime = "09:00", endTime = "17:00",
+                    colorValue = 0xFF3F7DDE, hourlyRate = 10.0,
+                    notes = "Line one\nLine \"two\"", jobId = JobProfile.DEFAULT_ID
+                )
+            )
+        )
+        val trickyMeta = meta.copy(profileName = "R&D <Team>")
+        val bytes = ByteArrayOutputStream().also {
+            ExportHelper.exportShiftsToExcel(tricky, it, trickyMeta)
+        }.toByteArray()
+
+        XSSFWorkbook(ByteArrayInputStream(bytes)).use { wb ->
+            val row = wb.getSheet("Shifts").getRow(4)
+            assertEquals("Καφετέρια & <Bar>", row.getCell(2).stringCellValue)
+            assertEquals("Line one\nLine \"two\"", row.getCell(14).stringCellValue)
         }
     }
 }

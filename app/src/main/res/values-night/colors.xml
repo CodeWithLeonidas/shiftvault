@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Matches WarmNightDark's background in ui/theme/Theme.kt. -->
-    <color name="night_background">#17161C</color>
-</resources>
