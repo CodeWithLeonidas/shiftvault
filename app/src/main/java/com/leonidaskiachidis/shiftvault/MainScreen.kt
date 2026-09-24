@@ -183,6 +183,59 @@ fun MainScreen(
 
     val activeProfileId = activeProfile.id
 
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    /** Shows [message] with an Undo action; runs [onUndo] if it is tapped. */
+    fun offerUndo(message: String, onUndo: () -> Unit) {
+        scope.launch {
+            // A newer action replaces the older offer rather than queueing behind it.
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val result = snackbarHostState.showSnackbar(
+                message = message,
+                actionLabel = "Undo",
+                withDismissAction = true,
+                duration = SnackbarDuration.Long
+            )
+            if (result == SnackbarResult.ActionPerformed) onUndo()
+        }
+    }
+
+    /**
+     * Puts back [originals] — each day's shifts for this job as they were —
+     * leaving every other job, and every other day, as it is now.
+     */
+    fun restoreDays(originals: Map<LocalDate, List<Shift>>) {
+        if (originals.isEmpty()) return
+        applyUpdate { map ->
+            originals.entries.fold(map) { acc, (date, slice) ->
+                ProfileScope.withDaySlice(acc, date, activeProfileId, slice)
+            }
+        }
+    }
+
+    /**
+     * [applyUpdate] plus an Undo that restores exactly the days [transform]
+     * changed for the active job. Used by deletes and rotation fills.
+     */
+    fun applyWithUndo(
+        message: (changedDays: Int) -> String,
+        transform: (Map<LocalDate, List<Shift>>) -> Map<LocalDate, List<Shift>>
+    ) {
+        val before = savedShifts
+        val changed = changedDays(
+            ProfileScope.shifts(before, activeProfileId),
+            ProfileScope.shifts(transform(before), activeProfileId)
+        )
+        if (changed.isEmpty()) return
+        val originals = changed.associateWith { ProfileScope.daySlice(before, it, activeProfileId) }
+        applyUpdate(transform)
+        offerUndo(message(changed.size)) { restoreDays(originals) }
+    }
+
+    // Erase mode collects every day it clears, so one Undo brings back the
+    // whole session rather than only the last tap. Reset on entering the mode.
+    val erasedDays = remember { mutableStateMapOf<LocalDate, List<Shift>>() }
+
     // What the grid actually draws: the active job's shifts, nothing else.
     val visibleShifts = remember(savedShifts, activeProfileId) {
         ProfileScope.shifts(savedShifts, activeProfileId)
@@ -220,251 +273,272 @@ fun MainScreen(
         else listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(cs.background)
-            .statusBarsPadding()
-    ) {
-        // ── Header ──
-        Row(
+    Box(Modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AppSpace.screenH)
-                .padding(top = 10.dp, bottom = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .background(cs.background)
+                .statusBarsPadding()
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                // The date used to sit here. The job you are logging against is
-                // the more load-bearing fact once there is more than one of
-                // them — and today's date is a tap away in the month bar below.
-                ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = greeting,
-                    style = MaterialTheme.typography.displayMedium,
-                    color = cs.onBackground
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            // The month bar shows the month alone now; the year lives here, as a
-            // quiet pill. It tracks the month you are *browsing*, not today, so
-            // paging into another year is never ambiguous. Reading the pager
-            // state inside the pill keeps the rest of the header off the
-            // recomposition path.
-            YearPill(year = { currentMonth.year })
-            Spacer(Modifier.width(10.dp))
-            CircleIconButton(
-                icon = AppIcons.EditCalendar,
-                contentDescription = "Quick actions",
-                onClick = { showQuickSheet = true }
-            )
-        }
-
-        // ── Totals: this week and the pay period you are in ──
-        //
-        // Read from the on-screen map, so a pasted or erased day moves the
-        // numbers on the same frame. Both follow today, not the month being
-        // browsed: they answer "how is this week going / what's my next pay?".
-        val week = remember(today, startOfWeek) { weekContaining(today, startOfWeek) }
-        val payRange = remember(today, activeProfile.payPeriod) {
-            activeProfile.payPeriod.periodContaining(today)
-        }
-        val weekTotals = remember(visibleShifts, week) { PeriodTotals.of(visibleShifts, week) }
-        val payTotals = remember(visibleShifts, payRange) { PeriodTotals.of(visibleShifts, payRange) }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AppSpace.screenH)
-                .padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            TotalsTile(
-                title = "This week",
-                range = week.shortLabel(),
-                totals = weekTotals,
-                currencySymbol = currencySymbol,
-                modifier = Modifier.weight(1f)
-            )
-            TotalsTile(
-                title = "Pay period",
-                range = payRange.shortLabel(),
-                totals = payTotals,
-                currencySymbol = currencySymbol,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        // ── Active-mode banner (paste / erase) ──
-        //
-        // The text and tint are latched while the banner is up: leaving the mode
-        // clears the very state the banner describes, so without this it would
-        // flip to the other mode's wording for the length of the exit.
-        var bannerContent by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
-        if (isActiveMode) {
-            val next = isEraserMode to
-                    if (isEraserMode) "Tap a day to clear it"
-                    else "Tap days to add \"${clipboardShift?.name ?: ""}\""
-            if (bannerContent != next) bannerContent = next
-        }
-
-        AnimatedVisibility(
-            visible = isActiveMode,
-            enter = expandVertically(animationSpec = tween(160)) + fadeIn(tween(160)),
-            exit = shrinkVertically(animationSpec = tween(140)) + fadeOut(tween(100))
-        ) {
-            val (eraser, message) = bannerContent ?: (false to "")
-            val accent = if (eraser) accents.negative else cs.primary
+            // ── Header ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AppSpace.screenH)
-                    .padding(bottom = 6.dp)
-                    .clip(CircleShape)
-                    .background(accent.copy(alpha = 0.12f))
-                    .padding(horizontal = 16.dp, vertical = 11.dp),
+                    .padding(top = 10.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    if (eraser) AppIcons.Delete else AppIcons.ContentCopy,
-                    contentDescription = null, tint = accent, modifier = Modifier.size(16.dp)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    // The date used to sit here. The job you are logging against is
+                    // the more load-bearing fact once there is more than one of
+                    // them — and today's date is a tap away in the month bar below.
+                    ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = greeting,
+                        style = MaterialTheme.typography.displayMedium,
+                        color = cs.onBackground
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                // The month bar shows the month alone now; the year lives here, as a
+                // quiet pill. It tracks the month you are *browsing*, not today, so
+                // paging into another year is never ambiguous. Reading the pager
+                // state inside the pill keeps the rest of the header off the
+                // recomposition path.
+                YearPill(year = { currentMonth.year })
                 Spacer(Modifier.width(10.dp))
-                Text(
-                    message,
-                    style = MaterialTheme.typography.labelMedium, color = accent,
-                    modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
-                Icon(
-                    AppIcons.Close, contentDescription = "Done", tint = accent,
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clickable { clipboardShift = null; isEraserMode = false }
+                CircleIconButton(
+                    icon = AppIcons.EditCalendar,
+                    contentDescription = "Quick actions",
+                    onClick = { showQuickSheet = true }
                 )
             }
-        }
 
-        // ── Month bar ──
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AppSpace.screenH)
-                .padding(bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CircleIconButton(
-                icon = AppIcons.ChevronLeft,
-                contentDescription = "Previous month",
-                onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
-                diameter = 44.dp,
-                iconSize = 19.dp,
-                container = cs.surfaceVariant,
-                tint = cs.onSurfaceVariant,
-                elevation = 0.dp
-            )
-            MonthTitle(
-                month = { currentMonth },
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-            )
-            CircleIconButton(
-                icon = AppIcons.ChevronRight,
-                contentDescription = "Next month",
-                onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
-                diameter = 44.dp,
-                iconSize = 19.dp,
-                container = cs.surfaceVariant,
-                tint = cs.onSurfaceVariant,
-                elevation = 0.dp
-            )
-        }
-
-        // ── Weekday strip ──
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AppSpace.screenH)
-                .padding(bottom = 8.dp)
-        ) {
-            weekDays.forEach { label ->
-                val weekend = label == "SAT" || label == "SUN"
-                Text(
-                    label, modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (weekend) cs.onSurface else cs.onSurfaceVariant
-                )
+            // ── Totals: this week and the pay period you are in ──
+            //
+            // Read from the on-screen map, so a pasted or erased day moves the
+            // numbers on the same frame. Both follow today, not the month being
+            // browsed: they answer "how is this week going / what's my next pay?".
+            val week = remember(today, startOfWeek) { weekContaining(today, startOfWeek) }
+            val payRange = remember(today, activeProfile.payPeriod) {
+                activeProfile.payPeriod.periodContaining(today)
             }
-        }
-
-        // ── Month grid ──
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = AppSpace.screenH)
-                .padding(bottom = 16.dp),
-            key = { it },
-            // Without this the two grids butt straight into each other mid-swipe
-            // and read as one continuous sheet.
-            pageSpacing = 14.dp,
-            beyondViewportPageCount = 1
-        ) { page ->
-            val monthForPage = remember(page) { anchorMonth.plusMonths((page - startPage).toLong()) }
-            val cells = remember(monthForPage, startOfWeek) { buildMonthCells(monthForPage, startOfWeek) }
-            val weeks = remember(cells) { cells.chunked(7) }
-
-            // Hoisted once per page — shared by all 42 cells.
-            val gridLine = cs.outline
-            val weekendWash = accents.weekendWash
-            val isDark = accents.isDark
-
-            Column(
+            val weekTotals = remember(visibleShifts, week) { PeriodTotals.of(visibleShifts, week) }
+            val payTotals = remember(visibleShifts, payRange) { PeriodTotals.of(visibleShifts, payRange) }
+            Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .clip(MaterialTheme.shapes.large)
-                    .background(cs.surface)
+                    .fillMaxWidth()
+                    .padding(horizontal = AppSpace.screenH)
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                weeks.forEachIndexed { rowIndex, week ->
-                    Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                        week.forEachIndexed { colIndex, date ->
-                            DayCell(
-                                date = date,
-                                inMonth = YearMonth.from(date) == monthForPage,
-                                isToday = date == today,
-                                dayShifts = visibleShifts[date] ?: emptyList(),
-                                gridLine = gridLine,
-                                weekendWash = weekendWash,
-                                isDark = isDark,
-                                drawTopRule = rowIndex > 0,
-                                drawStartRule = colIndex > 0,
-                                cs = cs,
-                                modifier = Modifier.weight(1f),
-                                onClick = {
-                                    val pasted = clipboardShift
-                                    when {
-                                        isEraserMode -> applyUpdate { map ->
-                                            ProfileScope.withDaySlice(map, date, activeProfileId, emptyList())
-                                        }
-                                        pasted != null -> applyUpdate { map ->
-                                            val updated = ProfileScope.daySlice(map, date, activeProfileId) +
-                                                    pasted.copy(jobId = activeProfileId)
-                                            ProfileScope.withDaySlice(map, date, activeProfileId, updated)
-                                        }
-                                        else -> {
-                                            selectedDate = date
-                                            if ((visibleShifts[date] ?: emptyList()).isNotEmpty()) showDaySheet = true
-                                            else showAddSheet = true
+                TotalsTile(
+                    title = "This week",
+                    range = week.shortLabel(),
+                    totals = weekTotals,
+                    currencySymbol = currencySymbol,
+                    modifier = Modifier.weight(1f)
+                )
+                TotalsTile(
+                    title = "Pay period",
+                    range = payRange.shortLabel(),
+                    totals = payTotals,
+                    currencySymbol = currencySymbol,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // ── Active-mode banner (paste / erase) ──
+            //
+            // The text and tint are latched while the banner is up: leaving the mode
+            // clears the very state the banner describes, so without this it would
+            // flip to the other mode's wording for the length of the exit.
+            var bannerContent by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+            if (isActiveMode) {
+                val next = isEraserMode to
+                        if (isEraserMode) "Tap a day to clear it"
+                        else "Tap days to add \"${clipboardShift?.name ?: ""}\""
+                if (bannerContent != next) bannerContent = next
+            }
+
+            AnimatedVisibility(
+                visible = isActiveMode,
+                enter = expandVertically(animationSpec = tween(160)) + fadeIn(tween(160)),
+                exit = shrinkVertically(animationSpec = tween(140)) + fadeOut(tween(100))
+            ) {
+                val (eraser, message) = bannerContent ?: (false to "")
+                val accent = if (eraser) accents.negative else cs.primary
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AppSpace.screenH)
+                        .padding(bottom = 6.dp)
+                        .clip(CircleShape)
+                        .background(accent.copy(alpha = 0.12f))
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        if (eraser) AppIcons.Delete else AppIcons.ContentCopy,
+                        contentDescription = null, tint = accent, modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.labelMedium, color = accent,
+                        modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                    Icon(
+                        AppIcons.Close, contentDescription = "Done", tint = accent,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clickable { clipboardShift = null; isEraserMode = false }
+                    )
+                }
+            }
+
+            // ── Month bar ──
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppSpace.screenH)
+                    .padding(bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircleIconButton(
+                    icon = AppIcons.ChevronLeft,
+                    contentDescription = "Previous month",
+                    onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                    diameter = 44.dp,
+                    iconSize = 19.dp,
+                    container = cs.surfaceVariant,
+                    tint = cs.onSurfaceVariant,
+                    elevation = 0.dp
+                )
+                MonthTitle(
+                    month = { currentMonth },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
+                CircleIconButton(
+                    icon = AppIcons.ChevronRight,
+                    contentDescription = "Next month",
+                    onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
+                    diameter = 44.dp,
+                    iconSize = 19.dp,
+                    container = cs.surfaceVariant,
+                    tint = cs.onSurfaceVariant,
+                    elevation = 0.dp
+                )
+            }
+
+            // ── Weekday strip ──
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppSpace.screenH)
+                    .padding(bottom = 8.dp)
+            ) {
+                weekDays.forEach { label ->
+                    val weekend = label == "SAT" || label == "SUN"
+                    Text(
+                        label, modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (weekend) cs.onSurface else cs.onSurfaceVariant
+                    )
+                }
+            }
+
+            // ── Month grid ──
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = AppSpace.screenH)
+                    .padding(bottom = 16.dp),
+                key = { it },
+                // Without this the two grids butt straight into each other mid-swipe
+                // and read as one continuous sheet.
+                pageSpacing = 14.dp,
+                beyondViewportPageCount = 1
+            ) { page ->
+                val monthForPage = remember(page) { anchorMonth.plusMonths((page - startPage).toLong()) }
+                val cells = remember(monthForPage, startOfWeek) { buildMonthCells(monthForPage, startOfWeek) }
+                val weeks = remember(cells) { cells.chunked(7) }
+
+                // Hoisted once per page — shared by all 42 cells.
+                val gridLine = cs.outline
+                val weekendWash = accents.weekendWash
+                val isDark = accents.isDark
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(MaterialTheme.shapes.large)
+                        .background(cs.surface)
+                ) {
+                    weeks.forEachIndexed { rowIndex, week ->
+                        Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                            week.forEachIndexed { colIndex, date ->
+                                DayCell(
+                                    date = date,
+                                    inMonth = YearMonth.from(date) == monthForPage,
+                                    isToday = date == today,
+                                    dayShifts = visibleShifts[date] ?: emptyList(),
+                                    gridLine = gridLine,
+                                    weekendWash = weekendWash,
+                                    isDark = isDark,
+                                    drawTopRule = rowIndex > 0,
+                                    drawStartRule = colIndex > 0,
+                                    cs = cs,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        val pasted = clipboardShift
+                                        when {
+                                            isEraserMode -> {
+                                                val slice = ProfileScope.daySlice(savedShifts, date, activeProfileId)
+                                                if (slice.isNotEmpty()) {
+                                                    if (date !in erasedDays) erasedDays[date] = slice
+                                                    applyUpdate { map ->
+                                                        ProfileScope.withDaySlice(map, date, activeProfileId, emptyList())
+                                                    }
+                                                    val count = erasedDays.size
+                                                    offerUndo("Cleared $count day${if (count == 1) "" else "s"}") {
+                                                        restoreDays(erasedDays.toMap())
+                                                        erasedDays.clear()
+                                                    }
+                                                }
+                                            }
+                                            pasted != null -> applyUpdate { map ->
+                                                val updated = ProfileScope.daySlice(map, date, activeProfileId) +
+                                                        pasted.copy(jobId = activeProfileId)
+                                                ProfileScope.withDaySlice(map, date, activeProfileId, updated)
+                                            }
+                                            else -> {
+                                                selectedDate = date
+                                                if ((visibleShifts[date] ?: emptyList()).isNotEmpty()) showDaySheet = true
+                                                else showAddSheet = true
+                                            }
                                         }
                                     }
-                                }
-                            )
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+
+        // Floats over the calendar, just above the bottom bar.
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        )
     }
 
     // ─────────────────────────── Sheets & dialogs ───────────────────────────
@@ -547,7 +621,7 @@ fun MainScreen(
                         onDelete = {
                             scope.launch {
                                 if (dayShifts.size == 1) { sheetState.hide(); showDaySheet = false }
-                                applyUpdate { map ->
+                                applyWithUndo({ "\"${shift.name}\" deleted" }) { map ->
                                     val slice = ProfileScope.daySlice(map, date, activeProfileId)
                                     val updated = if (index in slice.indices)
                                         slice.toMutableList().also { it.removeAt(index) }
@@ -571,6 +645,9 @@ fun MainScreen(
                     showAddSheet = true    // the add sheet slides up from Hidden
                 }
             }
+            // The sheet is its own window, above the screen's snackbar, so an
+            // Undo offered while it is open is shown here as well.
+            SnackbarHost(snackbarHostState, Modifier.padding(top = 8.dp))
         }
     }
 
@@ -599,7 +676,13 @@ fun MainScreen(
                 QuickAction(
                     AppIcons.Delete, "Erase days",
                     "Tap days to clear their shifts", accents.negative
-                ) { scope.launch { sheetState.hide(); showQuickSheet = false; isEraserMode = true } }
+                ) {
+                    scope.launch {
+                        sheetState.hide(); showQuickSheet = false
+                        erasedDays.clear()
+                        isEraserMode = true
+                    }
+                }
             }
         }
     }
