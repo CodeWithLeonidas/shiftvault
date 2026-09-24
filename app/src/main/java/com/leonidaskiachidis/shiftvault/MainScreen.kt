@@ -255,6 +255,7 @@ fun MainScreen(
     // Bulk modes
     var clipboardShift by rememberSaveable(stateSaver = jsonSaver<Shift?>()) { mutableStateOf(null) }
     var isEraserMode by rememberSaveable { mutableStateOf(false) }
+    var showRotation by rememberSaveable { mutableStateOf(false) }
     val isPasteMode by remember { derivedStateOf { clipboardShift != null } }
     val isActiveMode = isPasteMode || isEraserMode
 
@@ -677,6 +678,10 @@ fun MainScreen(
                     "Tap days to add it to each one", cs.primary
                 ) { scope.launch { sheetState.hide(); showQuickSheet = false; showPickToPasteSheet = true } }
                 QuickAction(
+                    AppIcons.DateRange, "Fill a rotation",
+                    "Repeat a pattern like 4 on / 4 off", cs.primary
+                ) { scope.launch { sheetState.hide(); showQuickSheet = false; showRotation = true } }
+                QuickAction(
                     AppIcons.Delete, "Erase days",
                     "Tap days to clear their shifts", accents.negative
                 ) {
@@ -688,6 +693,22 @@ fun MainScreen(
                 }
             }
         }
+    }
+
+    if (showRotation) {
+        RotationDialog(
+            savedShifts = customTemplates,
+            calendar = savedShifts,
+            profileId = activeProfileId,
+            today = today,
+            onApply = { pattern, slots, start, until, conflict ->
+                showRotation = false
+                applyWithUndo({ days -> "Rotation filled $days day${if (days == 1) "" else "s"}" }) { map ->
+                    RotationFill.apply(map, activeProfileId, pattern, slots, start, until, conflict)
+                }
+            },
+            onDismiss = { showRotation = false }
+        )
     }
 
     if (showPickToPasteSheet) {
