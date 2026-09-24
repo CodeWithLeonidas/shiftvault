@@ -11,8 +11,14 @@ package com.leonidaskiachidis.shiftvault
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -67,6 +73,8 @@ fun SettingsScreen(
     onBackupImport: () -> Unit,
     /** True while a picked backup file is waiting for the user to confirm. */
     backupImportPending: Boolean,
+    reminders: ReminderSettings = ReminderSettings(),
+    onRemindersChange: (ReminderSettings) -> Unit = {},
     onConfirmImport: () -> Unit,
     onDismissImport: () -> Unit
 ) {
@@ -81,6 +89,33 @@ fun SettingsScreen(
     var showBackup by rememberSaveable { mutableStateOf(false) }
     var showPrivacy by rememberSaveable { mutableStateOf(false) }
     var showWhatsNew by rememberSaveable { mutableStateOf(false) }
+    var showLogTimePicker by rememberSaveable { mutableStateOf(false) }
+
+    // Switching a reminder on is the moment to ask for notification permission
+    // (Android 13+). The change is held until the answer comes back.
+    var awaitingPermission by remember { mutableStateOf<ReminderSettings?>(null) }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val wanted = awaitingPermission
+        awaitingPermission = null
+        if (granted && wanted != null) onRemindersChange(wanted)
+        else if (!granted) Toast.makeText(
+            context,
+            "Notifications are off for ShiftVault — allow them in Android settings to get reminders.",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+    fun updateReminders(next: ReminderSettings) {
+        val switchingOn = (next.shiftEnabled && !reminders.shiftEnabled) ||
+            (next.logEnabled && !reminders.logEnabled)
+        if (switchingOn && !Reminders.canNotify(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            awaitingPermission = next
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            onRemindersChange(next)
+        }
+    }
 
     // Read from the installed package, so the About row can never drift from
     // the versionName in build.gradle again.
@@ -171,6 +206,58 @@ fun SettingsScreen(
                         subtitle = "Choose your accent palette",
                         value = variantName
                     ) { showTheme = true }
+                }
+
+                // ── Reminders ──
+                SectionLabel("Reminders")
+                Group {
+                    ReminderRow(
+                        icon = AppIcons.Schedule,
+                        badgeColor = accents.morning,
+                        title = "Before each shift",
+                        subtitle = if (reminders.shiftEnabled)
+                            "${ReminderSettings.leadLabel(reminders.shiftLeadMinutes)} before it starts"
+                        else "Off",
+                        checked = reminders.shiftEnabled,
+                        onChange = { updateReminders(reminders.copy(shiftEnabled = it)) }
+                    )
+                    if (reminders.shiftEnabled) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(start = 74.dp, end = 16.dp, bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ReminderSettings.LeadChoices.forEach { minutes ->
+                                FilterPill(
+                                    text = ReminderSettings.leadLabel(minutes),
+                                    selected = minutes == reminders.shiftLeadMinutes,
+                                    onClick = { updateReminders(reminders.copy(shiftLeadMinutes = minutes)) }
+                                )
+                            }
+                        }
+                    }
+                    RowDivider()
+                    ReminderRow(
+                        icon = AppIcons.EventNote,
+                        badgeColor = accents.evening,
+                        title = "Daily log reminder",
+                        subtitle = if (reminders.logEnabled)
+                            "At ${reminders.logTime}, if nothing is logged for today"
+                        else "Off",
+                        checked = reminders.logEnabled,
+                        onChange = { updateReminders(reminders.copy(logEnabled = it)) }
+                    )
+                    if (reminders.logEnabled) {
+                        SettingRow(
+                            icon = AppIcons.Schedule,
+                            badgeColor = accents.evening,
+                            title = "Reminder time",
+                            subtitle = null,
+                            value = reminders.logTime
+                        ) { showLogTimePicker = true }
+                    }
                 }
 
                 // ── Data ──
@@ -585,6 +672,26 @@ fun SettingsScreen(
         )
     }
 
+    if (showLogTimePicker) {
+        val t = reminders.logLocalTime
+        val state = rememberTimePickerState(t.hour, t.minute, is24Hour = true)
+        AlertDialog(
+            onDismissRequest = { showLogTimePicker = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = cs.surface,
+            text = {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { TimePicker(state = state) }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    updateReminders(reminders.copy(logTime = "%02d:%02d".format(state.hour, state.minute)))
+                    showLogTimePicker = false
+                }) { Text("OK", style = MaterialTheme.typography.labelLarge) }
+            },
+            dismissButton = { TextButton(onClick = { showLogTimePicker = false }) { Text("Cancel") } }
+        )
+    }
+
     if (showWhatsNew) {
         AlertDialog(
             onDismissRequest = { showWhatsNew = false },
@@ -755,6 +862,51 @@ private fun SettingRow(
                 tint = cs.onSurfaceVariant, modifier = Modifier.size(20.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun ReminderRow(
+    icon: Painter,
+    badgeColor: Color,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onChange(!checked) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Badge(icon, badgeColor)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 2, overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = cs.primary,
+                checkedBorderColor = cs.primary,
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = cs.surfaceVariant,
+                uncheckedBorderColor = cs.outline
+            )
+        )
     }
 }
 

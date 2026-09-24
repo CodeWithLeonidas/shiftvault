@@ -76,6 +76,7 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.work.runtime.ktx)
     testImplementation(libs.junit)
     // Test-only: the unit tests open every workbook XlsxWriter produces with
     // POI, so a malformed file fails the build. Not shipped in the APK.

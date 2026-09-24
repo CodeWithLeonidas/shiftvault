@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.withTransaction
@@ -62,6 +63,13 @@ class ShiftManager(private val context: Context) {
 
     /** Set when unreadable data was set aside; cleared once the user has been told. */
     private val UNREADABLE_NOTICE_KEY = booleanPreferencesKey("unreadable_data_notice")
+
+    private val REMINDER_SHIFT_KEY = booleanPreferencesKey("reminder_shift_enabled")
+    private val REMINDER_LEAD_KEY = intPreferencesKey("reminder_shift_lead_minutes")
+    private val REMINDER_LOG_KEY = booleanPreferencesKey("reminder_log_enabled")
+    private val REMINDER_LOG_TIME_KEY = stringPreferencesKey("reminder_log_time")
+    /** Start of the latest shift already announced, so none is announced twice. */
+    private val REMINDER_LAST_ANNOUNCED_KEY = stringPreferencesKey("reminder_last_announced")
 
     // ══════════════════════════════════════════════════════════════
     //  DATABASE ACCESS
@@ -144,6 +152,8 @@ class ShiftManager(private val context: Context) {
                 }
             }
         }
+        // A new, moved or deleted shift changes when the next reminder is due.
+        Reminders.requestReschedule(context)
     }
 
     val getShifts: Flow<Map<LocalDate, List<Shift>>> =
@@ -280,6 +290,37 @@ class ShiftManager(private val context: Context) {
     }
 
     // ══════════════════════════════════════════════════════════════
+    //  REMINDERS
+    // ══════════════════════════════════════════════════════════════
+
+    val getReminderSettings: Flow<ReminderSettings> = context.dataStore.data.map { p ->
+        ReminderSettings(
+            shiftEnabled = p[REMINDER_SHIFT_KEY] ?: false,
+            shiftLeadMinutes = p[REMINDER_LEAD_KEY] ?: 60,
+            logEnabled = p[REMINDER_LOG_KEY] ?: false,
+            logTime = p[REMINDER_LOG_TIME_KEY] ?: "20:00"
+        )
+    }
+
+    suspend fun saveReminderSettings(settings: ReminderSettings) {
+        context.dataStore.edit { p ->
+            p[REMINDER_SHIFT_KEY] = settings.shiftEnabled
+            p[REMINDER_LEAD_KEY] = settings.shiftLeadMinutes
+            p[REMINDER_LOG_KEY] = settings.logEnabled
+            p[REMINDER_LOG_TIME_KEY] = settings.logTime
+        }
+        Reminders.requestReschedule(context)
+    }
+
+    suspend fun lastAnnouncedShiftStart(): java.time.LocalDateTime? =
+        context.dataStore.data.first()[REMINDER_LAST_ANNOUNCED_KEY]
+            ?.let { runCatching { java.time.LocalDateTime.parse(it) }.getOrNull() }
+
+    suspend fun saveLastAnnouncedShiftStart(at: java.time.LocalDateTime) {
+        context.dataStore.edit { it[REMINDER_LAST_ANNOUNCED_KEY] = at.toString() }
+    }
+
+    // ══════════════════════════════════════════════════════════════
     //  JOB PROFILES
     //
     //  One profile always exists. An install that predates this feature has
@@ -350,6 +391,7 @@ class ShiftManager(private val context: Context) {
                 database.dao().deleteSavedForJob(id)
             }
         }
+        Reminders.requestReschedule(context)
     }
 
     /**
@@ -468,6 +510,7 @@ class ShiftManager(private val context: Context) {
                         ?: profiles.first().id
             }
         }
+        Reminders.requestReschedule(context)
     }
 
     private companion object {

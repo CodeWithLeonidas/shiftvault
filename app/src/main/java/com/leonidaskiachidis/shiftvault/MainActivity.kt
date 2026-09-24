@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
             val startOfWeek by shiftManager.getStartOfWeek.collectAsState(initial = "Monday")
             val lightThemeVariant by shiftManager.getLightThemeVariant.collectAsState(initial = "default")
             val darkThemeVariant by shiftManager.getDarkThemeVariant.collectAsState(initial = "default")
+            val reminderSettings by shiftManager.getReminderSettings.collectAsState(initial = ReminderSettings())
             val themeVariant = if (isDarkTheme) darkThemeVariant else lightThemeVariant
 
             // enableEdgeToEdge() in onCreate() reads the *system* dark-mode flag,
@@ -135,7 +136,12 @@ class MainActivity : ComponentActivity() {
                         // Opens the database and runs the one-time import from
                         // the old DataStore JSON up front, instead of on the
                         // first screen that happens to read shifts.
-                        launch { shiftManager.prepareStorage() }
+                        launch {
+                            shiftManager.prepareStorage()
+                            // Aim any pending reminders at the data as it is now.
+                            Reminders.createChannels(context)
+                            Reminders.requestReschedule(context)
+                        }
                         launch {
                             shiftManager.getShifts.collect { loadedShifts ->
                                 savedShifts = loadedShifts
@@ -558,6 +564,10 @@ class MainActivity : ComponentActivity() {
                                             )
                                         },
                                         backupImportPending = pendingImportUri != null,
+                                        reminders = reminderSettings,
+                                        onRemindersChange = { next ->
+                                            scope.launch { shiftManager.saveReminderSettings(next) }
+                                        },
                                         onConfirmImport = {
                                             val uriString = pendingImportUri
                                             pendingImportUri = null

@@ -40,6 +40,7 @@ object AppIcons {
     // ── Calendar / time ──
     val Today: Painter        @Composable get() = painterResource(R.drawable.ic_today)
     val Schedule: Painter     @Composable get() = painterResource(R.drawable.ic_schedule)
+    val EventNote: Painter    @Composable get() = painterResource(R.drawable.ic_event_note)
     val DateRange: Painter    @Composable get() = painterResource(R.drawable.ic_date_range)
     val EditCalendar: Painter @Composable get() = painterResource(R.drawable.ic_edit_calendar)
     val Place: Painter        @Composable get() = painterResource(R.drawable.ic_place)
