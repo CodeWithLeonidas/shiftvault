@@ -1,0 +1,14 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+# IDE settings are per-machine (JDK paths, devices, plugins) — kept out of the repo.
+/.idea/
+# The old, commit-less root repository, kept only until it's deleted by hand.
+/.git-empty-root-backup/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
