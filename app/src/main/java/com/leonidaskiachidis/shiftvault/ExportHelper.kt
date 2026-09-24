@@ -44,7 +44,12 @@ import java.util.Locale
 data class ReportMeta(
     val profileName: String,
     val profileColorValue: Long,
-    val currencyCode: String
+    val currencyCode: String,
+    /**
+     * The period the report was asked to cover ("15 Sep – 14 Oct 2026"), or
+     * null for everything recorded — then the range is read off the data.
+     */
+    val periodLabel: String? = null
 ) {
     val currencySymbol: String
         get() = try {
@@ -94,7 +99,8 @@ object ExportHelper {
         }
 
     /** "Jan 2025 – Sep 2026", or the single month when that is all there is. */
-    private fun rangeLabel(entries: List<Pair<LocalDate, Shift>>): String {
+    private fun rangeLabel(entries: List<Pair<LocalDate, Shift>>, meta: ReportMeta): String {
+        meta.periodLabel?.let { return it }
         if (entries.isEmpty()) return "No shifts recorded"
         val first = entries.first().first
         val last = entries.last().first
@@ -108,7 +114,7 @@ object ExportHelper {
      * A file name that says what the file is once it is sitting in a downloads
      * folder next to thirty others.
      */
-    fun suggestFileName(profileName: String, extension: String): String {
+    fun suggestFileName(profileName: String, extension: String, range: DateRange? = null): String {
         val safe = profileName.trim()
             // Any script's letters and digits are kept — "Καφετέρια" must not
             // collapse to an empty name. Only characters that are unsafe or
@@ -117,7 +123,8 @@ object ExportHelper {
             .replace(' ', '-')
             .take(28)
             .ifBlank { "Report" }
-        return "ShiftVault-$safe-${LocalDate.now()}.$extension"
+        val span = range?.let { "${it.start}_to_${it.end}" } ?: LocalDate.now().toString()
+        return "ShiftVault-$safe-$span.$extension"
     }
 
     private class Totals(val entries: List<Pair<LocalDate, Shift>>) {
@@ -380,7 +387,7 @@ object ExportHelper {
                     canvas.drawText(meta.profileName, MARGIN + 14f, 92f, pProfile)
                     val nameW = pProfile.measureText(meta.profileName)
                     canvas.drawText(
-                        " · ${rangeLabel(entries)}",
+                        " · ${rangeLabel(entries, meta)}",
                         MARGIN + 14f + nameW, 92f, pSub
                     )
 
@@ -401,7 +408,8 @@ object ExportHelper {
 
                     if (entries.isEmpty()) {
                         canvas.drawText(
-                            "No shifts recorded for ${meta.profileName} yet.",
+                            if (meta.periodLabel != null) "No shifts in this period."
+                            else "No shifts recorded for ${meta.profileName} yet.",
                             PAGE_W / 2f, firstPageTableTop + 60f, pEmpty
                         )
                     }
@@ -713,7 +721,7 @@ object ExportHelper {
         sheet.row(r++).height(24f).text(0, "Earnings Report", s.plain(true, 16, XL_INK))
         sheet.row(r++).text(
             0,
-            "${meta.profileName} · ${rangeLabel(entries)} · generated ${LocalDate.now().format(fullDateFmt)}",
+            "${meta.profileName} · ${rangeLabel(entries, meta)} · generated ${LocalDate.now().format(fullDateFmt)}",
             s.plain(false, 10, XL_MUTED)
         )
         r++
@@ -725,7 +733,11 @@ object ExportHelper {
         sheet.freeze = 3 to headerRow + 1
 
         if (entries.isEmpty()) {
-            sheet.row(r).text(0, "No shifts recorded for this job profile.", s.plain(false, 10, XL_MUTED))
+            sheet.row(r).text(
+                0,
+                if (meta.periodLabel != null) "No shifts in this period." else "No shifts recorded for this job profile.",
+                s.plain(false, 10, XL_MUTED)
+            )
             return
         }
 
@@ -813,7 +825,7 @@ object ExportHelper {
 
         var r = 0
         sheet.row(r++).height(28f).text(0, "Earnings Report", s.plain(true, 18, XL_INK))
-        sheet.row(r++).height(18f).text(0, "${meta.profileName} · ${rangeLabel(entries)}", s.plain(true, 11, accent))
+        sheet.row(r++).height(18f).text(0, "${meta.profileName} · ${rangeLabel(entries, meta)}", s.plain(true, 11, accent))
         sheet.row(r++).text(0, "Generated ${LocalDate.now().format(fullDateFmt)}", s.plain(false, 10, XL_MUTED))
         r++
 

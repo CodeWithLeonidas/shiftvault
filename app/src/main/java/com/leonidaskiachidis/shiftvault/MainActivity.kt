@@ -190,6 +190,18 @@ class MainActivity : ComponentActivity() {
                     // confirm.
                     var pendingImportUri by rememberSaveable { mutableStateOf<String?>(null) }
 
+                    // ── Export sheet ──
+                    var showExportSheet by rememberSaveable { mutableStateOf(false) }
+                    var exportInitialFormat by rememberSaveable { mutableStateOf(ExportFormat.PDF) }
+                    // The Analytics period offered first, kept as plain values so it saves.
+                    var exportShownStart by rememberSaveable { mutableStateOf<String?>(null) }
+                    var exportShownEnd by rememberSaveable { mutableStateOf<String?>(null) }
+                    val exportSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                    // What Save is writing once the picker returns; may outlive the activity.
+                    var pendingSave by rememberSaveable(stateSaver = jsonSaver<ExportRequest?>()) {
+                        mutableStateOf(null)
+                    }
+
                     val showUnreadableNotice by shiftManager.hasUnreadableDataNotice
                         .collectAsState(initial = false)
 
@@ -233,20 +245,78 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    val pdfExportLauncher = rememberLauncherForActivityResult(
-                        contract = ActivityResultContracts.CreateDocument("application/pdf")
-                    ) { uri ->
-                        runExport(uri, "PDF") { out ->
-                            ExportHelper.exportShiftsToPdf(context, profileShifts, out, reportMeta)
+                    /** Writes the report [request] describes: only its period's shifts, labelled with it. */
+                    fun writeReport(request: ExportRequest, out: java.io.OutputStream) {
+                        val range = request.range
+                        val shifts = range?.slice(profileShifts) ?: profileShifts
+                        val meta = reportMeta.copy(periodLabel = range?.label())
+                        when (request.format) {
+                            ExportFormat.PDF -> ExportHelper.exportShiftsToPdf(context, shifts, out, meta)
+                            ExportFormat.EXCEL -> ExportHelper.exportShiftsToExcel(shifts, out, meta)
                         }
                     }
 
+                    fun onSavePicked(uri: android.net.Uri?) {
+                        val request = pendingSave ?: return
+                        pendingSave = null
+                        val label = if (request.format == ExportFormat.PDF) "PDF" else "Excel file"
+                        runExport(uri, label) { out -> writeReport(request, out) }
+                    }
+
+                    val pdfExportLauncher = rememberLauncherForActivityResult(
+                        contract = ActivityResultContracts.CreateDocument(ExportFormat.PDF.mimeType)
+                    ) { uri -> onSavePicked(uri) }
+
                     val excelExportLauncher = rememberLauncherForActivityResult(
-                        contract = ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                    ) { uri ->
-                        runExport(uri, "Excel file") { out ->
-                            ExportHelper.exportShiftsToExcel(profileShifts, out, reportMeta)
+                        contract = ActivityResultContracts.CreateDocument(ExportFormat.EXCEL.mimeType)
+                    ) { uri -> onSavePicked(uri) }
+
+                    /**
+                     * Share: the report is written to the app's cache and handed to
+                     * the system share sheet — mail, chat, Drive — through the
+                     * FileProvider, so no storage permission is involved.
+                     */
+                    fun shareReport(request: ExportRequest) {
+                        scope.launch {
+                            val file = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+                                    // Yesterday's shared files have done their job.
+                                    val dayAgo = System.currentTimeMillis() - 86_400_000L
+                                    dir.listFiles()?.filter { it.lastModified() < dayAgo }?.forEach { it.delete() }
+                                    val name = ExportHelper.suggestFileName(
+                                        activeProfile.name, request.format.extension, request.range
+                                    )
+                                    java.io.File(dir, name).also { f -> f.outputStream().use { writeReport(request, it) } }
+                                }.getOrNull()
+                            }
+                            if (file == null) {
+                                Toast.makeText(context, "Couldn't create the report", Toast.LENGTH_LONG).show()
+                                return@launch
+                            }
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context, "${context.packageName}.fileprovider", file
+                            )
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = request.format.mimeType
+                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                putExtra(
+                                    android.content.Intent.EXTRA_SUBJECT,
+                                    "Earnings report · ${activeProfile.name}" +
+                                        (request.range?.let { " · ${it.label()}" } ?: "")
+                                )
+                                clipData = android.content.ClipData.newRawUri(file.name, uri)
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(android.content.Intent.createChooser(send, "Share report"))
                         }
+                    }
+
+                    fun openExportSheet(format: ExportFormat, shown: ExportPeriod?) {
+                        exportInitialFormat = format
+                        exportShownStart = shown?.range?.start?.toString()
+                        exportShownEnd = shown?.range?.end?.toString()
+                        showExportSheet = true
                     }
 
                     /**
@@ -421,12 +491,7 @@ class MainActivity : ComponentActivity() {
                                         savedShifts = profileShifts,
                                         onBackClick = { navController.popBackStack() },
                                         currencyCode = selectedCurrencyCode,
-                                        onExportPdf = {
-                                            pdfExportLauncher.launch(ExportHelper.suggestFileName(activeProfile.name, "pdf"))
-                                        },
-                                        onExportExcel = {
-                                            excelExportLauncher.launch(ExportHelper.suggestFileName(activeProfile.name, "xlsx"))
-                                        },
+                                        onExport = { shown -> openExportSheet(ExportFormat.PDF, shown) },
                                         activeProfile = activeProfile,
                                         onOpenProfiles = { showProfileSheet = true }
                                     )
@@ -477,12 +542,8 @@ class MainActivity : ComponentActivity() {
                                             }
                                         },
                                         onBackClick = { navController.popBackStack() },
-                                        onExportPdf = {
-                                            pdfExportLauncher.launch(ExportHelper.suggestFileName(activeProfile.name, "pdf"))
-                                        },
-                                        onExportExcel = {
-                                            excelExportLauncher.launch(ExportHelper.suggestFileName(activeProfile.name, "xlsx"))
-                                        },
+                                        onExportPdf = { openExportSheet(ExportFormat.PDF, null) },
+                                        onExportExcel = { openExportSheet(ExportFormat.EXCEL, null) },
                                         onBackupExport = {
                                             exportLauncher.launch(BackupHelper.generateBackupFileName())
                                         },
@@ -675,6 +736,43 @@ class MainActivity : ComponentActivity() {
                                     showProfileEditor = false
                                     editingProfile = null
                                 }
+                            )
+                        }
+
+                        if (showExportSheet) {
+                            val shown = if (exportShownStart != null && exportShownEnd != null)
+                                ExportPeriod(
+                                    "Shown in Analytics",
+                                    DateRange(
+                                        java.time.LocalDate.parse(exportShownStart),
+                                        java.time.LocalDate.parse(exportShownEnd)
+                                    )
+                                )
+                            else null
+                            ExportSheet(
+                                profile = activeProfile,
+                                initialFormat = exportInitialFormat,
+                                shownPeriod = shown,
+                                sheetState = exportSheetState,
+                                onExport = { format, period, action ->
+                                    scope.launch {
+                                        exportSheetState.hide()
+                                        showExportSheet = false
+                                        val request = ExportRequest.of(format, period.range)
+                                        when (action) {
+                                            ExportAction.SHARE -> shareReport(request)
+                                            ExportAction.SAVE -> {
+                                                pendingSave = request
+                                                val name = ExportHelper.suggestFileName(
+                                                    activeProfile.name, format.extension, period.range
+                                                )
+                                                if (format == ExportFormat.PDF) pdfExportLauncher.launch(name)
+                                                else excelExportLauncher.launch(name)
+                                            }
+                                        }
+                                    }
+                                },
+                                onDismiss = { showExportSheet = false }
                             )
                         }
 

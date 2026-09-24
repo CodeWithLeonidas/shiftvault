@@ -180,7 +180,7 @@ fun SettingsScreen(
                         icon = AppIcons.PictureAsPdf,
                         badgeColor = accents.negative,
                         title = "Export to PDF",
-                        subtitle = "Download your shift history",
+                        subtitle = "Pick a period, then save or share",
                         value = null,
                         onClick = onExportPdf
                     )
@@ -189,7 +189,7 @@ fun SettingsScreen(
                         icon = AppIcons.TableChart,
                         badgeColor = cs.secondary,
                         title = "Export to Excel",
-                        subtitle = "Download as a spreadsheet",
+                        subtitle = "A formatted spreadsheet, for any period",
                         value = null,
                         onClick = onExportExcel
                     )

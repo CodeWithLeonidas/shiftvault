@@ -87,8 +87,8 @@ fun StatsScreen(
     savedShifts: Map<LocalDate, List<Shift>>,
     onBackClick: () -> Unit,
     currencyCode: String = "EUR",
-    onExportPdf: () -> Unit = {},
-    onExportExcel: () -> Unit = {},
+    /** Opens the export sheet, offering the period currently on show first. */
+    onExport: (ExportPeriod) -> Unit = {},
     activeProfile: JobProfile = JobProfile.Default,
     onOpenProfiles: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -110,7 +110,6 @@ fun StatsScreen(
     val payPeriod = activeProfile.payPeriod
     val payRange = remember(payPeriod, payAnchor) { payPeriod.periodContaining(payAnchor) }
 
-    var exportMenuOpen by rememberSaveable { mutableStateOf(false) }
     var showPeriodSheet by rememberSaveable { mutableStateOf(false) }
     var showRangePicker by rememberSaveable { mutableStateOf(false) }
     var selectedBreakdown by rememberSaveable { mutableStateOf<String?>(null) }
@@ -248,46 +247,13 @@ fun StatsScreen(
         ScreenHeader(
             title = "Analytics",
             trailing = {
-                Box {
-                    PillButton(
-                        text = "Export",
-                        onClick = { exportMenuOpen = true },
-                        icon = AppIcons.Upload
-                    )
-                    DropdownMenu(
-                        expanded = exportMenuOpen,
-                        onDismissRequest = { exportMenuOpen = false },
-                        shape = MaterialTheme.shapes.medium,
-                        containerColor = cs.surface
-                    ) {
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    "Export to PDF",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = cs.onSurface
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(AppIcons.PictureAsPdf, null, Modifier.size(18.dp), tint = cs.primary)
-                            },
-                            onClick = { exportMenuOpen = false; onExportPdf() }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    "Export to Excel",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = cs.onSurface
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(AppIcons.TableChart, null, Modifier.size(18.dp), tint = cs.primary)
-                            },
-                            onClick = { exportMenuOpen = false; onExportExcel() }
-                        )
-                    }
-                }
+                PillButton(
+                    text = "Export",
+                    onClick = {
+                        onExport(ExportPeriod("Shown in Analytics", DateRange(periodStart, periodEnd)))
+                    },
+                    icon = AppIcons.Upload
+                )
             }
         )
 
