@@ -132,9 +132,10 @@ class MainActivity : ComponentActivity() {
                     // first frame instead of flashing an empty state.
                     var savedTemplates by remember { mutableStateOf<List<Shift>>(emptyList()) }
                     LaunchedEffect(Unit) {
-                        // Anything that no longer decodes is moved to a safety
-                        // copy before any screen gets a chance to write.
-                        launch { shiftManager.setAsideUnreadableData() }
+                        // Opens the database and runs the one-time import from
+                        // the old DataStore JSON up front, instead of on the
+                        // first screen that happens to read shifts.
+                        launch { shiftManager.prepareStorage() }
                         launch {
                             shiftManager.getShifts.collect { loadedShifts ->
                                 savedShifts = loadedShifts

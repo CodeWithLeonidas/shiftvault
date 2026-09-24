@@ -7,10 +7,18 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.time.LocalDate
@@ -18,10 +26,9 @@ import java.time.LocalDate
 val Context.dataStore by preferencesDataStore(name = "shift_vault_prefs")
 
 /**
- * The format everything is stored in. Lenient on purpose: a field a later
- * version adds or drops, or an enum value this build doesn't know, must never
- * make the whole store unreadable — that used to decode as "no shifts at all",
- * and the next edit then saved that emptiness over the user's history.
+ * The JSON format of backups and of the pre-Room store. Lenient on purpose: a
+ * field a later version adds or drops, or an enum value this build doesn't
+ * know, must never make data unreadable.
  */
 internal val StoreJson = Json {
     ignoreUnknownKeys = true
@@ -31,7 +38,17 @@ internal val StoreJson = Json {
 /** Stored text that no longer decodes. Thrown so it can be set aside, never overwritten. */
 private class UnreadableDataException(cause: Throwable) : Exception(cause)
 
+/**
+ * The one door to the app's data. Shifts and saved shifts live in Room
+ * ([ShiftDatabase]); settings and Job Profiles live in DataStore. Screens only
+ * ever see Shift and Map<LocalDate, List<Shift>>, whichever store is behind it.
+ */
 class ShiftManager(private val context: Context) {
+
+    // ── DataStore keys ──
+    // SHIFTS_KEY / TEMPLATES_KEY held all shifts as JSON before Room. They are
+    // read once, by the import below, and otherwise left alone as a safety
+    // copy. A later version can remove them.
     private val SHIFTS_KEY = stringPreferencesKey("saved_shifts_map")
     private val TEMPLATES_KEY = stringPreferencesKey("custom_shift_templates")
     private val CURRENCY_KEY = stringPreferencesKey("selected_currency")
@@ -46,16 +63,69 @@ class ShiftManager(private val context: Context) {
     /** Set when unreadable data was set aside; cleared once the user has been told. */
     private val UNREADABLE_NOTICE_KEY = booleanPreferencesKey("unreadable_data_notice")
 
+    // ══════════════════════════════════════════════════════════════
+    //  DATABASE ACCESS
+    //
+    //  Every read and write goes through db(), which makes sure the one-time
+    //  import from DataStore has finished first. Without that gate a screen
+    //  could write to the empty database while the import was still running.
+    // ══════════════════════════════════════════════════════════════
+
+    private suspend fun db(): ShiftDatabase {
+        readyDatabase?.let { return it }
+        return readyLock.withLock {
+            readyDatabase ?: ShiftDatabase.get(context).also { database ->
+                withContext(NonCancellable + Dispatchers.IO) { importFromDataStoreIfNeeded(database) }
+                readyDatabase = database
+            }
+        }
+    }
+
+    /** Opens the database and runs the import now, rather than on first use. */
+    suspend fun prepareStorage() {
+        db()
+    }
+
+    /**
+     * Copies the shifts that were stored as JSON in DataStore into Room, once.
+     *
+     * The "done" marker is written in the same transaction as the rows, so an
+     * import cut short (app killed, phone off) leaves nothing behind and simply
+     * runs again next time — it can never half-import or import twice.
+     */
+    private suspend fun importFromDataStoreIfNeeded(database: ShiftDatabase) {
+        val dao = database.dao()
+        if (dao.meta(ShiftDatabase.META_IMPORTED_FROM_DATASTORE) != null) return
+
+        // Anything that doesn't decode is set aside (and the user told) rather
+        // than imported as "nothing" — the raw text stays in DataStore.
+        var shifts: Map<LocalDate, List<Shift>> = emptyMap()
+        var templates: List<Shift> = emptyList()
+        context.dataStore.edit { preferences ->
+            shifts = readShiftsOrSetAside(preferences)
+            templates = readTemplatesOrSetAside(preferences)
+        }
+
+        database.withTransaction {
+            if (dao.meta(ShiftDatabase.META_IMPORTED_FROM_DATASTORE) != null) return@withTransaction
+            dao.clearCalendar()
+            dao.clearSaved()
+            dao.insertCalendar(shifts.flatMap { (date, list) -> calendarRows(date, list) })
+            dao.insertSaved(savedRows(templates))
+            dao.putMeta(MetaEntity(ShiftDatabase.META_IMPORTED_FROM_DATASTORE, System.currentTimeMillis().toString()))
+        }
+    }
+
     // --- CALENDAR SHIFTS ---
 
     /**
      * Applies [transform] to the shifts as they are stored *right now* and saves
-     * the result, all inside one DataStore transaction.
+     * the result, all inside one database transaction.
      *
-     * Screens used to read the map, change it, and save it back later. Two of
-     * those overlapping (fast taps in paste mode) meant the second save was
-     * built on a stale map and quietly dropped the first. Here the transform
-     * always sees the latest committed value, so no update can be lost.
+     * The transform always sees the latest committed data, so overlapping
+     * updates (fast taps in paste mode) each land on top of one another instead
+     * of the later one overwriting the earlier. Only the days that actually
+     * changed are rewritten.
      *
      * Runs NonCancellable: a screen closing mid-save must not abandon the write.
      */
@@ -63,40 +133,56 @@ class ShiftManager(private val context: Context) {
         transform: (Map<LocalDate, List<Shift>>) -> Map<LocalDate, List<Shift>>
     ) {
         withContext(NonCancellable) {
-            context.dataStore.edit { preferences ->
-                val current = readShiftsForWrite(preferences)
+            val database = db()
+            val dao = database.dao()
+            database.withTransaction {
+                val current = dao.calendar().toShiftMap()
                 val updated = transform(current).filterValues { it.isNotEmpty() }
-                preferences[SHIFTS_KEY] = encodeShiftMap(updated)
+                for (date in changedDays(current, updated)) {
+                    dao.deleteDay(date.toString())
+                    updated[date]?.let { dao.insertCalendar(calendarRows(date, it)) }
+                }
             }
         }
     }
 
-    val getShifts: Flow<Map<LocalDate, List<Shift>>> = context.dataStore.data.map { preferences ->
-        // Unreadable data shows as empty here, but is never written back as
-        // empty: every write path sets it aside first (see readShiftsForWrite).
-        try {
-            decodeShiftMap(preferences[SHIFTS_KEY])
-        } catch (_: UnreadableDataException) {
-            emptyMap()
-        }
-    }
-
-    val getCurrency: Flow<String> = context.dataStore.data
-        .map { preferences ->
-            preferences[CURRENCY_KEY] ?: "EUR"
-        }
+    val getShifts: Flow<Map<LocalDate, List<Shift>>> =
+        flow { emitAll(db().dao().observeCalendar()) }
+            .map { rows -> rows.toShiftMap() }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
 
     // --- TEMPLATES ---
 
     /** Same contract as [updateShifts], for the saved-shift library. */
     suspend fun updateTemplates(transform: (List<Shift>) -> List<Shift>) {
         withContext(NonCancellable) {
-            context.dataStore.edit { preferences ->
-                val current = readTemplatesForWrite(preferences)
-                preferences[TEMPLATES_KEY] = StoreJson.encodeToString(transform(current))
+            val database = db()
+            val dao = database.dao()
+            database.withTransaction {
+                val current = dao.saved().map { it.shift.toShift() }
+                val updated = transform(current)
+                if (updated != current) {
+                    // The library is short and its order is its identity (edits
+                    // are by index), so it is rewritten as a whole.
+                    dao.clearSaved()
+                    dao.insertSaved(savedRows(updated))
+                }
             }
         }
     }
+
+    val getTemplates: Flow<List<Shift>> =
+        flow { emitAll(db().dao().observeSaved()) }
+            .map { rows -> rows.map { it.shift.toShift() } }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    // --- CURRENCY ---
+    val getCurrency: Flow<String> = context.dataStore.data
+        .map { preferences ->
+            preferences[CURRENCY_KEY] ?: "EUR"
+        }
 
     suspend fun saveCurrency(code: String) {
         context.dataStore.edit { preferences ->
@@ -151,32 +237,14 @@ class ShiftManager(private val context: Context) {
         }
     }
 
-    val getTemplates: Flow<List<Shift>> = context.dataStore.data.map { preferences ->
-        try {
-            decodeTemplates(preferences[TEMPLATES_KEY])
-        } catch (_: UnreadableDataException) {
-            emptyList()
-        }
-    }
-
     // ══════════════════════════════════════════════════════════════
     //  UNREADABLE DATA
     //
-    //  If stored shifts or saved shifts ever stop decoding, the raw text is
-    //  moved to its own timestamped key — never overwritten, and included in
-    //  Android's auto backup — and the app carries on with an empty store. A
-    //  later version can read the copy back; nothing is silently lost.
+    //  If the pre-Room JSON ever fails to decode during the import, the raw
+    //  text is moved to its own timestamped DataStore key — never overwritten,
+    //  and included in Android's auto backup — and the app carries on. A later
+    //  version can read the copy back; nothing is silently lost.
     // ══════════════════════════════════════════════════════════════
-
-    /** Checks both stores once, at start-up, and sets aside anything unreadable. */
-    suspend fun setAsideUnreadableData() {
-        withContext(NonCancellable) {
-            context.dataStore.edit { preferences ->
-                readShiftsForWrite(preferences)
-                readTemplatesForWrite(preferences)
-            }
-        }
-    }
 
     /** True while there is set-aside data the user hasn't been told about yet. */
     val hasUnreadableDataNotice: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -187,7 +255,7 @@ class ShiftManager(private val context: Context) {
         context.dataStore.edit { preferences -> preferences.remove(UNREADABLE_NOTICE_KEY) }
     }
 
-    private fun readShiftsForWrite(preferences: MutablePreferences): Map<LocalDate, List<Shift>> =
+    private fun readShiftsOrSetAside(preferences: MutablePreferences): Map<LocalDate, List<Shift>> =
         try {
             decodeShiftMap(preferences[SHIFTS_KEY])
         } catch (_: UnreadableDataException) {
@@ -195,7 +263,7 @@ class ShiftManager(private val context: Context) {
             emptyMap()
         }
 
-    private fun readTemplatesForWrite(preferences: MutablePreferences): List<Shift> =
+    private fun readTemplatesOrSetAside(preferences: MutablePreferences): List<Shift> =
         try {
             decodeTemplates(preferences[TEMPLATES_KEY])
         } catch (_: UnreadableDataException) {
@@ -215,9 +283,9 @@ class ShiftManager(private val context: Context) {
     //  JOB PROFILES
     //
     //  One profile always exists. An install that predates this feature has
-    //  nothing stored, so the flow hands back the default profile and the
-    //  decoders above stamp every legacy record onto it — the user sees their
-    //  data exactly where they left it, now under a name.
+    //  nothing stored, so the flow hands back the default profile and every
+    //  legacy record is stamped onto it — the user sees their data exactly
+    //  where they left it, now under a name.
     // ══════════════════════════════════════════════════════════════
 
     val getProfiles: Flow<List<JobProfile>> = context.dataStore.data.map { preferences ->
@@ -256,26 +324,30 @@ class ShiftManager(private val context: Context) {
      * Removes a profile together with everything filed under it. Deleting the
      * last profile is refused — the app is always scoped to one — and deleting
      * the active one moves the selection to whatever is left.
+     *
+     * The profile goes first: if the app were stopped between the two steps,
+     * what remained would be rows of a profile that no longer exists, which no
+     * screen shows — never a profile whose shifts had vanished.
      */
     suspend fun deleteProfile(id: String) {
         withContext(NonCancellable) {
+            var deleted = false
             context.dataStore.edit { preferences ->
                 val remaining = decodeProfiles(preferences[PROFILES_KEY]).filterNot { it.id == id }
                 if (remaining.isEmpty()) return@edit
 
                 preferences[PROFILES_KEY] = StoreJson.encodeToString(remaining)
-
-                val shifts = readShiftsForWrite(preferences)
-                    .mapValues { (_, list) -> list.filterNot { it.jobId == id } }
-                    .filterValues { it.isNotEmpty() }
-                preferences[SHIFTS_KEY] = encodeShiftMap(shifts)
-
-                val templates = readTemplatesForWrite(preferences).filterNot { it.jobId == id }
-                preferences[TEMPLATES_KEY] = StoreJson.encodeToString(templates)
-
                 if (preferences[ACTIVE_PROFILE_KEY] == id) {
                     preferences[ACTIVE_PROFILE_KEY] = remaining.first().id
                 }
+                deleted = true
+            }
+            if (!deleted) return@withContext
+
+            val database = db()
+            database.withTransaction {
+                database.dao().deleteCalendarForJob(id)
+                database.dao().deleteSavedForJob(id)
             }
         }
     }
@@ -294,27 +366,20 @@ class ShiftManager(private val context: Context) {
         var result = CopyResult(0, 0)
         if (shifts.isEmpty()) return result
 
-        withContext(NonCancellable) {
-            context.dataStore.edit { preferences ->
-                val all = readTemplatesForWrite(preferences)
-                val existing = all.filter { it.jobId == toId }.map { it.identity() }.toMutableSet()
-
-                val additions = mutableListOf<Shift>()
-                for (shift in shifts) {
-                    val moved = shift.copy(jobId = toId)
-                    if (existing.add(moved.identity())) additions += moved
-                }
-
-                result = CopyResult(copied = additions.size, skipped = shifts.size - additions.size)
-                if (additions.isNotEmpty()) {
-                    preferences[TEMPLATES_KEY] = StoreJson.encodeToString(all + additions)
-                }
+        updateTemplates { all ->
+            val existing = all.filter { it.jobId == toId }.map { it.identity() }.toMutableSet()
+            val additions = mutableListOf<Shift>()
+            for (shift in shifts) {
+                val moved = shift.copy(jobId = toId)
+                if (existing.add(moved.identity())) additions += moved
             }
+            result = CopyResult(copied = additions.size, skipped = shifts.size - additions.size)
+            all + additions
         }
         return result
     }
 
-    // ── Decoders, shared by the flows and the edit blocks above ──
+    // ── JSON decoders: profiles, and the pre-Room shift store ──
 
     private fun decodeProfiles(json: String?): List<JobProfile> {
         if (json.isNullOrEmpty()) return listOf(JobProfile.Default)
@@ -348,32 +413,19 @@ class ShiftManager(private val context: Context) {
         }
     }
 
-    private fun encodeShiftMap(shifts: Map<LocalDate, List<Shift>>): String =
-        StoreJson.encodeToString(shifts.mapKeys { it.key.toString() })
-
     // --- BACKUP & RESTORE ---
 
     /**
-     * Collects current shifts and templates into a BackupData object.
+     * Collects current shifts and templates into a BackupData object. The file
+     * format is unchanged by the move to Room, so old and new backups open in
+     * either version.
      */
     suspend fun getAllDataForBackup(): BackupData {
+        val dao = db().dao()
+        val shifts = dao.calendar().toShiftMap().mapKeys { it.key.toString() }
+        val templates = dao.saved().map { it.shift.toShift() }
+
         val preferences = context.dataStore.data.first()
-
-        // Unreadable data is set aside at start-up, so empty here really is empty.
-        val shifts: Map<String, List<Shift>> =
-            try {
-                decodeShiftMap(preferences[SHIFTS_KEY])
-            } catch (_: UnreadableDataException) {
-                emptyMap()
-            }.mapKeys { it.key.toString() }
-
-        val templates: List<Shift> =
-            try {
-                decodeTemplates(preferences[TEMPLATES_KEY])
-            } catch (_: UnreadableDataException) {
-                emptyList()
-            }
-
         val profiles = decodeProfiles(preferences[PROFILES_KEY])
 
         return BackupData(
@@ -389,15 +441,26 @@ class ShiftManager(private val context: Context) {
      * Overwrites all shifts and templates with the data from a BackupData object.
      *
      * A file written before Job Profiles existed carries no profiles, so the
-     * default one is restored alongside it and the decoders fold that backup's
-     * shifts into it — importing an old backup keeps working unchanged.
+     * default one is restored alongside it and every record without a jobId is
+     * folded into it — importing an old backup keeps working unchanged.
+     *
+     * Date keys were validated when the file was read (BackupHelper), so the
+     * parse below cannot fail on a file that reached this point.
      */
     suspend fun restoreFromBackup(backupData: BackupData) {
         withContext(NonCancellable) {
-            context.dataStore.edit { preferences ->
-                preferences[SHIFTS_KEY] = StoreJson.encodeToString(backupData.shifts)
-                preferences[TEMPLATES_KEY] = StoreJson.encodeToString(backupData.templates)
+            val database = db()
+            val dao = database.dao()
+            database.withTransaction {
+                dao.clearCalendar()
+                dao.clearSaved()
+                dao.insertCalendar(
+                    backupData.shifts.flatMap { (date, list) -> calendarRows(LocalDate.parse(date), list) }
+                )
+                dao.insertSaved(savedRows(backupData.templates))
+            }
 
+            context.dataStore.edit { preferences ->
                 val profiles = backupData.profiles.ifEmpty { listOf(JobProfile.Default) }
                 preferences[PROFILES_KEY] = StoreJson.encodeToString(profiles)
                 preferences[ACTIVE_PROFILE_KEY] =
@@ -405,5 +468,11 @@ class ShiftManager(private val context: Context) {
                         ?: profiles.first().id
             }
         }
+    }
+
+    private companion object {
+        /** Shared by every ShiftManager instance: the import runs once per process. */
+        val readyLock = Mutex()
+        @Volatile var readyDatabase: ShiftDatabase? = null
     }
 }
