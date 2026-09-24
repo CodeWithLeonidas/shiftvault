@@ -56,7 +56,7 @@ import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
 
-enum class StatsMode { MONTHLY, YEARLY, CUSTOM }
+enum class StatsMode { PAY_PERIOD, MONTHLY, YEARLY, CUSTOM }
 
 private enum class StatsTab(val label: String) {
     OVERVIEW("Overview"), SHIFTS("Shifts"), EARNINGS("Earnings"), TRENDS("Trends")
@@ -95,7 +95,9 @@ fun StatsScreen(
 ) {
     // Saveable (java.time types are Serializable), so the period the user
     // picked survives rotation and a trip to another tab.
-    var mode by rememberSaveable { mutableStateOf(StatsMode.MONTHLY) }
+    // Opens on the pay period: for a job paid by calendar month that is simply
+    // this month, and for everyone else it is the figure that matters.
+    var mode by rememberSaveable { mutableStateOf(StatsMode.PAY_PERIOD) }
     var tab by rememberSaveable { mutableStateOf(StatsTab.OVERVIEW) }
     var bucket by rememberSaveable { mutableStateOf(Bucket.WEEK) }
 
@@ -103,6 +105,10 @@ fun StatsScreen(
     var selectedYear by rememberSaveable { mutableStateOf(java.time.Year.now()) }
     var startDate by rememberSaveable { mutableStateOf(LocalDate.now().minusWeeks(1)) }
     var endDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
+    // Any day inside the pay period on show; stepping moves it a period at a time.
+    var payAnchor by rememberSaveable { mutableStateOf(LocalDate.now()) }
+    val payPeriod = activeProfile.payPeriod
+    val payRange = remember(payPeriod, payAnchor) { payPeriod.periodContaining(payAnchor) }
 
     var exportMenuOpen by rememberSaveable { mutableStateOf(false) }
     var showPeriodSheet by rememberSaveable { mutableStateOf(false) }
@@ -111,8 +117,9 @@ fun StatsScreen(
     var showDaysOff by rememberSaveable { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val stats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode) {
+    val stats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode, payRange) {
         when (mode) {
+            StatsMode.PAY_PERIOD -> StatsHelper.calculateRangeStats(savedShifts, payRange.start, payRange.end)
             StatsMode.MONTHLY -> StatsHelper.calculateMonthlyStats(savedShifts, selectedMonth)
             StatsMode.YEARLY -> StatsHelper.calculateYearlyStats(savedShifts, selectedYear)
             StatsMode.CUSTOM -> StatsHelper.calculateRangeStats(savedShifts, startDate, endDate)
@@ -120,8 +127,12 @@ fun StatsScreen(
     }
 
     // Previous comparable period — drives the deltas on the stat cards.
-    val prevStats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode) {
+    val prevStats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode, payRange) {
         when (mode) {
+            StatsMode.PAY_PERIOD -> {
+                val prev = payPeriod.previous(payRange)
+                StatsHelper.calculateRangeStats(savedShifts, prev.start, prev.end)
+            }
             StatsMode.MONTHLY ->
                 StatsHelper.calculateMonthlyStats(savedShifts, selectedMonth.minusMonths(1))
             StatsMode.YEARLY ->
@@ -138,28 +149,32 @@ fun StatsScreen(
     }
 
     val deltaSuffix = when (mode) {
+        StatsMode.PAY_PERIOD -> "vs last period"
         StatsMode.MONTHLY -> "vs last mo"
         StatsMode.YEARLY -> "vs last yr"
         StatsMode.CUSTOM -> "vs prev"
     }
 
     // Period bounds — used by the charts and the header pill.
-    val periodStart = remember(mode, selectedMonth, selectedYear, startDate) {
+    val periodStart = remember(mode, selectedMonth, selectedYear, startDate, payRange) {
         when (mode) {
+            StatsMode.PAY_PERIOD -> payRange.start
             StatsMode.MONTHLY -> selectedMonth.atDay(1)
             StatsMode.YEARLY -> LocalDate.of(selectedYear.value, 1, 1)
             StatsMode.CUSTOM -> startDate
         }
     }
-    val periodEnd = remember(mode, selectedMonth, selectedYear, endDate) {
+    val periodEnd = remember(mode, selectedMonth, selectedYear, endDate, payRange) {
         when (mode) {
+            StatsMode.PAY_PERIOD -> payRange.end
             StatsMode.MONTHLY -> selectedMonth.atEndOfMonth()
             StatsMode.YEARLY -> LocalDate.of(selectedYear.value, 12, 31)
             StatsMode.CUSTOM -> endDate
         }
     }
-    val periodLabel = remember(mode, selectedMonth, selectedYear, startDate, endDate) {
+    val periodLabel = remember(mode, selectedMonth, selectedYear, startDate, endDate, payRange) {
         when (mode) {
+            StatsMode.PAY_PERIOD -> payRange.label()
             StatsMode.MONTHLY ->
                 "${selectedMonth.month.name.lowercase().replaceFirstChar { it.uppercase() }} ${selectedMonth.year}"
             StatsMode.YEARLY -> selectedYear.toString()
@@ -196,8 +211,8 @@ fun StatsScreen(
         out
     }
 
-    val hourBuckets = remember(dailyHours, mode, selectedMonth, selectedYear, startDate, endDate) {
-        buildHourBuckets(dailyHours, mode, selectedMonth, selectedYear, startDate, endDate)
+    val hourBuckets = remember(dailyHours, mode, selectedMonth, selectedYear, periodStart, periodEnd) {
+        buildHourBuckets(dailyHours, mode, selectedMonth, selectedYear, periodStart, periodEnd)
     }
 
     val insights = remember(dailyHours, dailyEarnings, stats, mode, selectedMonth) {
@@ -604,6 +619,7 @@ fun StatsScreen(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 listOf(
+                    StatsMode.PAY_PERIOD to "Pay period",
                     StatsMode.MONTHLY to "Month",
                     StatsMode.YEARLY to "Year",
                     StatsMode.CUSTOM to "Custom"
@@ -629,6 +645,12 @@ fun StatsScreen(
             }
             Spacer(Modifier.height(16.dp))
             when (mode) {
+                StatsMode.PAY_PERIOD -> Stepper(
+                    payRange.shortLabel(),
+                    payPeriod.describe(),
+                    { payAnchor = payPeriod.previous(payRange).start },
+                    { payAnchor = payPeriod.next(payRange).start }
+                )
                 StatsMode.MONTHLY -> Stepper(
                     selectedMonth.month.name.lowercase().replaceFirstChar { it.uppercase() },
                     selectedMonth.year.toString(),
@@ -1597,7 +1619,7 @@ private fun buildHourBuckets(
         HourBucket(ym.month.name.take(1), sum)
     }
 
-    StatsMode.CUSTOM -> {
+    StatsMode.CUSTOM, StatsMode.PAY_PERIOD -> {
         val span = (ChronoUnit.DAYS.between(start, end) + 1).toInt().coerceAtLeast(1)
         if (span <= 10) {
             List(span) { i ->
@@ -1624,6 +1646,7 @@ private fun bucketSubtitle(mode: StatsMode, month: YearMonth, year: java.time.Ye
             "Weekly distribution (${month.month.name.lowercase().replaceFirstChar { it.uppercase() }})"
         StatsMode.YEARLY -> "Monthly distribution (${year.value})"
         StatsMode.CUSTOM -> "Distribution across the range"
+        StatsMode.PAY_PERIOD -> "Distribution across the pay period"
     }
 
 /** Small, practical read-outs shown under the charts. */

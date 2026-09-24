@@ -129,7 +129,9 @@ data class JobProfile(
     /** Prefills the rate on a new shift created while this profile is active. */
     val defaultHourlyRate: Double = 0.0,
     /** Epoch millis; orders the switcher so the list never shuffles. */
-    val createdAt: Long = 0L
+    val createdAt: Long = 0L,
+    /** How this job's pay periods fall. Defaults to the calendar month. */
+    val payPeriod: PayPeriod = PayPeriod()
 ) {
     companion object {
         /**

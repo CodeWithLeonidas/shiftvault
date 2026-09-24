@@ -449,6 +449,15 @@ fun ProfileEditorSheet(
     }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
 
+    // Pay period, field by field so each survives rotation on its own.
+    val initialPeriod = editing?.payPeriod ?: PayPeriod()
+    var payCycle by rememberSaveable(editing) { mutableStateOf(initialPeriod.cycle) }
+    var payStartDay by rememberSaveable(editing) { mutableIntStateOf(initialPeriod.startDay) }
+    var payWeekStart by rememberSaveable(editing) { mutableIntStateOf(initialPeriod.weekStart) }
+    var payAnchor by rememberSaveable(editing) { mutableStateOf(initialPeriod.anchor) }
+    var showAnchorPicker by rememberSaveable { mutableStateOf(false) }
+    val payPeriod = PayPeriod(payCycle, payStartDay, payWeekStart, payAnchor)
+
     val canSave = name.isNotBlank()
 
     AppSheet(
@@ -460,7 +469,12 @@ fun ProfileEditorSheet(
         else
             "Renaming keeps every shift filed under this job"
     ) {
-        Column(Modifier.imePadding()) {
+        Column(
+            Modifier
+                .imePadding()
+                .nestedScroll(SheetScrollLock)
+                .verticalScroll(rememberScrollState())
+        ) {
             Spacer(Modifier.height(20.dp))
 
             FieldLabel("Name")
@@ -495,6 +509,24 @@ fun ProfileEditorSheet(
                 prefix = currencySymbol
             )
 
+            Spacer(Modifier.height(20.dp))
+            PayPeriodEditor(
+                period = payPeriod,
+                onCycle = { cycle ->
+                    // A fresh bi-weekly cycle starts this week, which is the
+                    // likeliest truth and easy to move.
+                    if (cycle == PayCycle.BIWEEKLY && payCycle != PayCycle.BIWEEKLY &&
+                        editing?.payPeriod?.cycle != PayCycle.BIWEEKLY
+                    ) {
+                        payAnchor = weekContaining(LocalDate.now(), "Monday").start.toString()
+                    }
+                    payCycle = cycle
+                },
+                onStartDay = { payStartDay = it },
+                onWeekStart = { payWeekStart = it },
+                onPickAnchor = { showAnchorPicker = true }
+            )
+
             Spacer(Modifier.height(22.dp))
             Surface(
                 onClick = {
@@ -508,7 +540,8 @@ fun ProfileEditorSheet(
                         )).copy(
                             name = name.trim(),
                             colorValue = colorValue,
-                            defaultHourlyRate = parseDecimal(rateText) ?: 0.0
+                            defaultHourlyRate = parseDecimal(rateText) ?: 0.0,
+                            payPeriod = payPeriod
                         )
                     )
                 },
@@ -547,6 +580,25 @@ fun ProfileEditorSheet(
         }
     }
 
+    if (showAnchorPicker) {
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = runCatching { LocalDate.parse(payAnchor) }
+                .getOrDefault(LocalDate.now()).toEpochDay() * 86_400_000L
+        )
+        DatePickerDialog(
+            onDismissRequest = { showAnchorPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let {
+                        payAnchor = LocalDate.ofEpochDay(it / 86_400_000L).toString()
+                    }
+                    showAnchorPicker = false
+                }) { Text("OK", style = MaterialTheme.typography.labelLarge) }
+            },
+            dismissButton = { TextButton(onClick = { showAnchorPicker = false }) { Text("Cancel") } }
+        ) { DatePicker(state = pickerState) }
+    }
+
     if (confirmDelete && editing != null) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
@@ -580,6 +632,129 @@ fun ProfileEditorSheet(
             }
         )
     }
+}
+
+/**
+ * Pay cycle controls, with the period you are in right now spelled out below
+ * so the setting can be checked at a glance instead of worked out.
+ */
+@Composable
+private fun PayPeriodEditor(
+    period: PayPeriod,
+    onCycle: (PayCycle) -> Unit,
+    onStartDay: (Int) -> Unit,
+    onWeekStart: (Int) -> Unit,
+    onPickAnchor: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    FieldLabel("Pay period")
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "The stretch one payslip covers. Home totals, Analytics and exports use it.",
+        style = MaterialTheme.typography.bodySmall,
+        color = cs.onSurfaceVariant
+    )
+    Spacer(Modifier.height(12.dp))
+    SegmentedControl(
+        options = listOf(
+            PayCycle.MONTHLY to "Monthly",
+            PayCycle.WEEKLY to "Weekly",
+            PayCycle.BIWEEKLY to "Every 2 wks"
+        ),
+        selected = period.cycle,
+        onSelect = onCycle
+    )
+    Spacer(Modifier.height(12.dp))
+
+    when (period.cycle) {
+        PayCycle.MONTHLY -> Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.medium)
+                .background(cs.background)
+                .border(1.dp, cs.outline, MaterialTheme.shapes.medium)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Starts on the", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                Text(
+                    if (period.startDay <= 1) "1st (calendar month)" else PayPeriod.ordinal(period.startDay),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface
+                )
+            }
+            CircleIconButton(
+                icon = AppIcons.ChevronLeft, contentDescription = "Earlier day",
+                onClick = { onStartDay(if (period.startDay <= 1) 31 else period.startDay - 1) },
+                diameter = 40.dp, iconSize = 18.dp, container = cs.surfaceVariant, elevation = 0.dp
+            )
+            Spacer(Modifier.width(8.dp))
+            CircleIconButton(
+                icon = AppIcons.ChevronRight, contentDescription = "Later day",
+                onClick = { onStartDay(if (period.startDay >= 31) 1 else period.startDay + 1) },
+                diameter = 40.dp, iconSize = 18.dp, container = cs.surfaceVariant, elevation = 0.dp
+            )
+        }
+
+        PayCycle.WEEKLY -> Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            (1..7).forEach { dow ->
+                val selected = dow == period.weekStart
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(CircleShape)
+                        .background(if (selected) cs.primary else cs.surfaceVariant)
+                        .clickable { onWeekStart(dow) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        java.time.DayOfWeek.of(dow)
+                            .getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
+                            .take(3),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) cs.onPrimary else cs.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        PayCycle.BIWEEKLY -> Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.medium)
+                .background(cs.background)
+                .border(1.dp, cs.outline, MaterialTheme.shapes.medium)
+                .clickable(onClick = onPickAnchor)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("A pay period started on", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                Text(
+                    runCatching {
+                        LocalDate.parse(period.anchor)
+                            .format(java.time.format.DateTimeFormatter.ofPattern("EEE, d MMM yyyy"))
+                    }.getOrDefault(period.anchor),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface
+                )
+            }
+            Icon(AppIcons.EditCalendar, null, tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        }
+    }
+
+    Spacer(Modifier.height(10.dp))
+    Text(
+        "Current period: " + period.periodContaining(LocalDate.now()).label(),
+        style = MaterialTheme.typography.bodySmall,
+        color = cs.primary
+    )
 }
 
 /** Presets only — a job is a label, so the full custom picker isn't warranted. */

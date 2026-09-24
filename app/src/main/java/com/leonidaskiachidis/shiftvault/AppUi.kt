@@ -299,6 +299,49 @@ fun FilterPill(
 }
 
 // ══════════════════════════════════════════════════════════════
+//  SegmentedControl — one-of-a-few choice in a pill track
+//  ("Worked / Paid leave / Unpaid", "Monthly / Weekly / Every 2 weeks")
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+fun <T> SegmentedControl(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(CircleShape)
+            .background(cs.surfaceVariant)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        options.forEach { (value, label) ->
+            val isSelected = value == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(CircleShape)
+                    .background(if (isSelected) cs.primary else Color.Transparent)
+                    .clickable { if (!isSelected) onSelect(value) }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) cs.onPrimary else cs.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
 //  TextTab — borderless label tab ("Date (Newest)" / "Duration")
 // ══════════════════════════════════════════════════════════════
 
