@@ -261,6 +261,40 @@ fun MainScreen(
             )
         }
 
+        // ── Totals: this week and the pay period you are in ──
+        //
+        // Read from the on-screen map, so a pasted or erased day moves the
+        // numbers on the same frame. Both follow today, not the month being
+        // browsed: they answer "how is this week going / what's my next pay?".
+        val week = remember(today, startOfWeek) { weekContaining(today, startOfWeek) }
+        val payRange = remember(today, activeProfile.payPeriod) {
+            activeProfile.payPeriod.periodContaining(today)
+        }
+        val weekTotals = remember(visibleShifts, week) { PeriodTotals.of(visibleShifts, week) }
+        val payTotals = remember(visibleShifts, payRange) { PeriodTotals.of(visibleShifts, payRange) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpace.screenH)
+                .padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            TotalsTile(
+                title = "This week",
+                range = week.shortLabel(),
+                totals = weekTotals,
+                currencySymbol = currencySymbol,
+                modifier = Modifier.weight(1f)
+            )
+            TotalsTile(
+                title = "Pay period",
+                range = payRange.shortLabel(),
+                totals = payTotals,
+                currencySymbol = currencySymbol,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
         // ── Active-mode banner (paste / erase) ──
         //
         // The text and tint are latched while the banner is up: leaving the mode
@@ -622,6 +656,66 @@ fun MainScreen(
                 editingShift = null
             }
         )
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Totals tile
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun TotalsTile(
+    title: String,
+    range: String,
+    totals: PeriodTotals,
+    currencySymbol: String,
+    modifier: Modifier = Modifier
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        modifier
+            .clip(MaterialTheme.shapes.large)
+            .background(cs.surface)
+            .then(
+                if (AppTheme.accents.isDark) Modifier.border(1.dp, cs.outline, MaterialTheme.shapes.large)
+                else Modifier
+            )
+            .padding(horizontal = 14.dp, vertical = 11.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = cs.onSurface,
+                maxLines = 1
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                range,
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                "$currencySymbol${"%,.2f".format(totals.earnings)}",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                hoursLabel(totals.hours),
+                style = MaterialTheme.typography.labelMedium,
+                color = cs.primary,
+                maxLines = 1,
+                modifier = Modifier.padding(bottom = 2.dp)
+            )
+        }
     }
 }
 
