@@ -79,12 +79,6 @@ internal val SheetScrollLock = object : NestedScrollConnection {
     override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity = available
 }
 
-private fun greetingFor(hour: Int): String = when {
-    hour < 12 -> "Good morning,"
-    hour < 18 -> "Good afternoon,"
-    else -> "Good evening,"
-}
-
 internal fun shiftTimeLabel(shift: Shift): String =
     if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day"
     else "${shift.startTime} — ${shift.endTime}"
@@ -265,8 +259,6 @@ fun MainScreen(
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
 
-    val greeting = greetingFor(now.hour)
-
     val weekDays = remember(startOfWeek) {
         if (startOfWeek == "Sunday") listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
         else listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
@@ -279,74 +271,50 @@ fun MainScreen(
                 .background(cs.background)
                 .statusBarsPadding()
         ) {
-            // ── Header ──
+            // ── Top bar: which job, which year, quick actions ──
+            //
+            // One slim row, so as much of the screen as possible goes to the
+            // calendar itself.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AppSpace.screenH)
-                    .padding(top = 10.dp, bottom = 14.dp),
+                    .padding(top = 6.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    // The date used to sit here. The job you are logging against is
-                    // the more load-bearing fact once there is more than one of
-                    // them — and today's date is a tap away in the month bar below.
-                    ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = greeting,
-                        style = MaterialTheme.typography.displayMedium,
-                        color = cs.onBackground
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                // The month bar shows the month alone now; the year lives here, as a
-                // quiet pill. It tracks the month you are *browsing*, not today, so
-                // paging into another year is never ambiguous. Reading the pager
-                // state inside the pill keeps the rest of the header off the
-                // recomposition path.
+                ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
+                Spacer(Modifier.weight(1f))
+                // The year of the month being *browsed*, not today's, so paging
+                // into another year is never ambiguous. Read inside the pill to
+                // keep the rest of the bar off the recomposition path.
                 YearPill(year = { currentMonth.year })
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(8.dp))
                 CircleIconButton(
                     icon = AppIcons.EditCalendar,
                     contentDescription = "Quick actions",
-                    onClick = { showQuickSheet = true }
+                    onClick = { showQuickSheet = true },
+                    diameter = 40.dp,
+                    iconSize = 19.dp
                 )
             }
 
-            // ── Totals: this week and the pay period you are in ──
+            // ── Earnings: the pay period you are in ──
             //
             // Read from the on-screen map, so a pasted or erased day moves the
-            // numbers on the same frame. Both follow today, not the month being
-            // browsed: they answer "how is this week going / what's my next pay?".
-            val week = remember(today, startOfWeek) { weekContaining(today, startOfWeek) }
+            // figure on the same frame. Follows today, not the month being
+            // browsed: it answers "what will my next pay be?".
             val payRange = remember(today, activeProfile.payPeriod) {
                 activeProfile.payPeriod.periodContaining(today)
             }
-            val weekTotals = remember(visibleShifts, week) { PeriodTotals.of(visibleShifts, week) }
             val payTotals = remember(visibleShifts, payRange) { PeriodTotals.of(visibleShifts, payRange) }
-            Row(
+            EarningsStrip(
+                range = payRange.shortLabel(),
+                totals = payTotals,
+                currencySymbol = currencySymbol,
                 modifier = Modifier
-                    .fillMaxWidth()
                     .padding(horizontal = AppSpace.screenH)
-                    .padding(bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                TotalsTile(
-                    title = "This week",
-                    range = week.shortLabel(),
-                    totals = weekTotals,
-                    currencySymbol = currencySymbol,
-                    modifier = Modifier.weight(1f)
-                )
-                TotalsTile(
-                    title = "Pay period",
-                    range = payRange.shortLabel(),
-                    totals = payTotals,
-                    currencySymbol = currencySymbol,
-                    modifier = Modifier.weight(1f)
-                )
-            }
+                    .padding(bottom = 8.dp)
+            )
 
             // ── Active-mode banner (paste / erase) ──
             //
@@ -375,7 +343,7 @@ fun MainScreen(
                         .padding(bottom = 6.dp)
                         .clip(CircleShape)
                         .background(accent.copy(alpha = 0.12f))
-                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
@@ -402,15 +370,15 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AppSpace.screenH)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CircleIconButton(
                     icon = AppIcons.ChevronLeft,
                     contentDescription = "Previous month",
                     onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
-                    diameter = 44.dp,
-                    iconSize = 19.dp,
+                    diameter = 36.dp,
+                    iconSize = 17.dp,
                     container = cs.surfaceVariant,
                     tint = cs.onSurfaceVariant,
                     elevation = 0.dp
@@ -425,8 +393,8 @@ fun MainScreen(
                     icon = AppIcons.ChevronRight,
                     contentDescription = "Next month",
                     onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
-                    diameter = 44.dp,
-                    iconSize = 19.dp,
+                    diameter = 36.dp,
+                    iconSize = 17.dp,
                     container = cs.surfaceVariant,
                     tint = cs.onSurfaceVariant,
                     elevation = 0.dp
@@ -438,7 +406,7 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AppSpace.screenH)
-                    .padding(bottom = 8.dp)
+                    .padding(bottom = 4.dp)
             ) {
                 weekDays.forEach { label ->
                     val weekend = label == "SAT" || label == "SUN"
@@ -457,7 +425,7 @@ fun MainScreen(
                     .fillMaxWidth()
                     .weight(1f)
                     .padding(horizontal = AppSpace.screenH)
-                    .padding(bottom = 16.dp),
+                    .padding(bottom = 8.dp),
                 key = { it },
                 // Without this the two grids butt straight into each other mid-swipe
                 // and read as one continuous sheet.
@@ -744,62 +712,58 @@ fun MainScreen(
 }
 
 // ══════════════════════════════════════════════════════════════
-//  Totals tile
+//  Earnings strip
 // ══════════════════════════════════════════════════════════════
 
+/** One slim line: "Pay period · 15 Sep – 14 Oct ··· €1,024.00 · 96h". */
 @Composable
-private fun TotalsTile(
-    title: String,
+private fun EarningsStrip(
     range: String,
     totals: PeriodTotals,
     currencySymbol: String,
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
-    Column(
+    Row(
         modifier
-            .clip(MaterialTheme.shapes.large)
+            .fillMaxWidth()
+            .clip(CircleShape)
             .background(cs.surface)
             .then(
-                if (AppTheme.accents.isDark) Modifier.border(1.dp, cs.outline, MaterialTheme.shapes.large)
+                if (AppTheme.accents.isDark) Modifier.border(1.dp, cs.outline, CircleShape)
                 else Modifier
             )
-            .padding(horizontal = 14.dp, vertical = 11.dp)
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                title,
-                style = MaterialTheme.typography.labelMedium,
-                color = cs.onSurface,
-                maxLines = 1
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                range,
-                style = MaterialTheme.typography.labelSmall,
-                color = cs.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                "$currencySymbol${"%,.2f".format(totals.earnings)}",
-                style = MaterialTheme.typography.titleMedium,
-                color = cs.onSurface,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                hoursLabel(totals.hours),
-                style = MaterialTheme.typography.labelMedium,
-                color = cs.primary,
-                maxLines = 1,
-                modifier = Modifier.padding(bottom = 2.dp)
-            )
-        }
+        Text(
+            "Pay period",
+            style = MaterialTheme.typography.labelMedium,
+            color = cs.onSurface,
+            maxLines = 1
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            range,
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "$currencySymbol${"%,.2f".format(totals.earnings)}",
+            style = MaterialTheme.typography.titleSmall,
+            color = cs.onSurface,
+            maxLines = 1
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            hoursLabel(totals.hours),
+            style = MaterialTheme.typography.labelMedium,
+            color = cs.primary,
+            maxLines = 1
+        )
     }
 }
 
