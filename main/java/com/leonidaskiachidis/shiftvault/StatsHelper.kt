@@ -1,58 +1,108 @@
 package com.leonidaskiachidis.shiftvault
 
-import java.time.Duration
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.YearMonth
+
+// ── Per-shift entry for the detail bottom sheet ──
+data class ShiftBreakdownEntry(
+    val date: LocalDate,
+    val startTime: String,
+    val endTime: String,
+    val hours: Double,
+    val earnings: Double,
+    val breakMinutes: Int,
+    val notes: String,
+    val colorValue: Long
+)
 
 data class MonthlyStats(
     val totalHours: Double,
     val totalShifts: Int,
     val shiftBreakdown: Map<String, Int>,
+    // hours per shift-name group
+    val shiftBreakdownHours: Map<String, Double>,
+    // full per-occurrence entries, keyed by shift name
+    val shiftBreakdownEntries: Map<String, List<ShiftBreakdownEntry>>,
     val averageHoursPerShift: Double,
     val estimatedEarnings: Double,
     val restDays: Int,
-    val holidayDays: Int
+    /** Unpaid leave records in the period (v1 name kept for call sites). */
+    val holidayDays: Int,
+    /** Paid leave records in the period (v1 name kept for call sites). */
+    val dayOffDays: Int,
+    // actual dates for the drill-down sheets
+    val holidayDates: List<LocalDate>,
+    val dayOffDates: List<LocalDate>,
+    val restDates: List<LocalDate>
 )
 
 object StatsHelper {
 
     fun calculateMonthlyStats(
         allShifts: Map<LocalDate, List<Shift>>,
-        targetMonth: YearMonth
+        targetMonth: YearMonth,
+        today: LocalDate = LocalDate.now()
     ): MonthlyStats {
         val shiftsInMonthWithDate = allShifts.filter { (date, _) ->
             YearMonth.from(date) == targetMonth
         }
 
-        // We count a "worked day" only if it contains at least one non-holiday shift
-        val workedDaysCount = shiftsInMonthWithDate.values.count { dayShifts ->
-            dayShifts.any { !it.isHoliday }
-        }
+        val allDatesInMonth = (1..targetMonth.lengthOfMonth()).map { targetMonth.atDay(it) }
 
         return processShiftsToStats(
-            shifts = shiftsInMonthWithDate.values.flatten(),
-            totalDays = targetMonth.lengthOfMonth(),
-            workedDaysCount = workedDaysCount
+            shiftsWithDate = shiftsInMonthWithDate,
+            allDatesInPeriod = allDatesInMonth,
+            today = today
         )
     }
 
-    private fun calculateShiftDuration(shift: Shift): Double {
-        val start = LocalTime.parse(shift.startTime)
-        val end = LocalTime.parse(shift.endTime)
-
-        val totalDuration = if (end.isAfter(start)) {
-            Duration.between(start, end)
-        } else {
-            // Overnight shift logic
-            Duration.between(start, LocalTime.MAX).plusMinutes(1) +
-                    Duration.between(LocalTime.MIN, end)
+    fun calculateYearlyStats(
+        allShifts: Map<LocalDate, List<Shift>>,
+        targetYear: java.time.Year,
+        today: LocalDate = LocalDate.now()
+    ): MonthlyStats {
+        val shiftsInYearWithDate = allShifts.filter { (date, _) ->
+            date.year == targetYear.value
         }
 
-        // Subtract the break minutes and convert to decimal hours
-        val netMinutes = totalDuration.toMinutes() - shift.breakMinutes
-        return maxOf(0L, netMinutes) / 60.0
+        val allDatesInYear = (1..targetYear.length())
+            .map { LocalDate.ofYearDay(targetYear.value, it) }
+
+        return processShiftsToStats(
+            shiftsWithDate = shiftsInYearWithDate,
+            allDatesInPeriod = allDatesInYear,
+            today = today
+        )
     }
+
+    fun calculateRangeStats(
+        allShifts: Map<LocalDate, List<Shift>>,
+        start: LocalDate,
+        end: LocalDate,
+        today: LocalDate = LocalDate.now()
+    ): MonthlyStats {
+        val shiftsInRangeWithDate = allShifts.filter { (date, _) ->
+            !date.isBefore(start) && !date.isAfter(end)
+        }
+
+        val daysInRange = java.time.temporal.ChronoUnit.DAYS.between(start, end).toInt() + 1
+        val allDatesInRange = (0 until daysInRange).map { start.plusDays(it.toLong()) }
+
+        return processShiftsToStats(
+            shiftsWithDate = shiftsInRangeWithDate,
+            allDatesInPeriod = allDatesInRange,
+            today = today
+        )
+    }
+
+    /**
+     * Net worked hours for one shift. Thin wrapper over PayEngine so existing
+     * call sites keep working; all the rules live in one place now.
+     */
+    fun calculateShiftDuration(shift: Shift): Double = PayEngine.workedHours(shift)
+
+    /** Money the shift is worth, including multiplier and bonus. */
+    fun calculateShiftEarnings(shift: Shift): Double = PayEngine.earnings(shift)
 
     fun formatHours(hours: Double): String {
         val wholeHours = hours.toInt()
@@ -60,74 +110,82 @@ object StatsHelper {
         return if (minutes > 0) "${wholeHours}h ${minutes}m" else "${wholeHours}h"
     }
 
-    // 1. YEARLY LOGIC
-    fun calculateYearlyStats(
-        allShifts: Map<LocalDate, List<Shift>>,
-        targetYear: java.time.Year
+    private fun processShiftsToStats(
+        shiftsWithDate: Map<LocalDate, List<Shift>>,
+        allDatesInPeriod: List<LocalDate>,
+        today: LocalDate
     ): MonthlyStats {
-        val shiftsInYearWithDate = allShifts.filter { (date, _) ->
-            date.year == targetYear.value
+        // Migrate once, up front — everything below reads the new fields only.
+        val byDate: Map<LocalDate, List<Shift>> =
+            shiftsWithDate.mapValues { (_, list) -> list.map { it.migrated() } }
+
+        val allShiftsList = byDate.values.flatten()
+        val workedShifts = allShiftsList.filter { it.dayType == DayType.WORKED }
+
+        val totalHours = workedShifts.sumOf { PayEngine.workedHours(it) }
+        val totalShifts = workedShifts.size
+
+        // Every record contributes, so a worked public holiday finally counts.
+        val estimatedEarnings = allShiftsList.sumOf { PayEngine.earnings(it) }
+
+        val breakdown = workedShifts.groupBy { it.name }.mapValues { it.value.size }
+
+        val breakdownHours = workedShifts.groupBy { it.name }.mapValues { (_, shifts) ->
+            shifts.sumOf { PayEngine.workedHours(it) }
         }
 
-        val workedDaysCount = shiftsInYearWithDate.values.count { dayShifts ->
-            dayShifts.any { !it.isHoliday }
-        }
-
-        return processShiftsToStats(
-            shifts = shiftsInYearWithDate.values.flatten(),
-            totalDays = targetYear.length(),
-            workedDaysCount = workedDaysCount
-        )
-    }
-
-    // 2. CUSTOM RANGE LOGIC
-    fun calculateRangeStats(
-        allShifts: Map<LocalDate, List<Shift>>,
-        start: LocalDate,
-        end: LocalDate
-    ): MonthlyStats {
-        val shiftsInRangeWithDate = allShifts.filter { (date, _) ->
-            !date.isBefore(start) && !date.isAfter(end)
-        }
-
-        val daysInRange = java.time.temporal.ChronoUnit.DAYS.between(start, end).toInt() + 1
-        val workedDaysCount = shiftsInRangeWithDate.values.count { dayShifts ->
-            dayShifts.any { !it.isHoliday }
-        }
-
-        return processShiftsToStats(
-            shifts = shiftsInRangeWithDate.values.flatten(),
-            totalDays = daysInRange,
-            workedDaysCount = workedDaysCount
-        )
-    }
-
-    // 3. PRIVATE REUSABLE PROCESSOR
-    private fun processShiftsToStats(shifts: List<Shift>, totalDays: Int, workedDaysCount: Int = 0): MonthlyStats {
-        val actualWorkShifts = shifts.filter { !it.isHoliday }
-        val holidayCount = shifts.count { it.isHoliday }
-
-        val totalHours = actualWorkShifts.sumOf { calculateShiftDuration(it) }
-        val totalShifts = actualWorkShifts.size
-
-        // --- UPDATED EARNINGS LOGIC ---
-        val estimatedEarnings = actualWorkShifts.sumOf { shift ->
-            calculateShiftDuration(shift) * shift.hourlyRate
-        }
-
-        val breakdown = actualWorkShifts.groupBy { it.name }
-            .mapValues { it.value.size }
+        val breakdownEntries: Map<String, List<ShiftBreakdownEntry>> =
+            byDate.entries
+                .flatMap { (date, shifts) ->
+                    shifts.filter { it.dayType == DayType.WORKED }.map { shift ->
+                        ShiftBreakdownEntry(
+                            date = date,
+                            startTime = shift.startTime,
+                            endTime = shift.endTime,
+                            hours = PayEngine.workedHours(shift),
+                            earnings = PayEngine.earnings(shift),
+                            breakMinutes = shift.breakMinutes,
+                            notes = shift.notes,
+                            colorValue = shift.colorValue
+                        ) to shift.name
+                    }
+                }
+                .groupBy({ it.second }, { it.first })
+                .mapValues { (_, entries) -> entries.sortedByDescending { it.date } }
 
         val avgHours = if (totalShifts > 0) totalHours / totalShifts else 0.0
+
+        // Paid leave (was "day off") and unpaid leave (was "holiday")
+        val paidLeaveDates = byDate
+            .filter { (_, shifts) -> shifts.any { it.dayType == DayType.PAID_LEAVE } }
+            .keys.sorted()
+
+        val unpaidLeaveDates = byDate
+            .filter { (_, shifts) -> shifts.any { it.dayType == DayType.UNPAID_LEAVE } }
+            .keys.sorted()
+
+        // Rest = nothing logged at all (a leave day is not rest), and only days
+        // that have already happened — the rest of the current month isn't
+        // "rest" yet, it just hasn't been lived.
+        val loggedDates = byDate.keys.toSet()
+        val restDates = allDatesInPeriod
+            .filter { !it.isAfter(today) && it !in loggedDates }
+            .sorted()
 
         return MonthlyStats(
             totalHours = totalHours,
             totalShifts = totalShifts,
             shiftBreakdown = breakdown,
+            shiftBreakdownHours = breakdownHours,
+            shiftBreakdownEntries = breakdownEntries,
             averageHoursPerShift = avgHours,
             estimatedEarnings = estimatedEarnings,
-            restDays = totalDays - workedDaysCount,
-            holidayDays = holidayCount
+            restDays = restDates.size,
+            holidayDays = unpaidLeaveDates.size,
+            dayOffDays = paidLeaveDates.size,
+            holidayDates = unpaidLeaveDates,
+            dayOffDates = paidLeaveDates,
+            restDates = restDates
         )
     }
 }

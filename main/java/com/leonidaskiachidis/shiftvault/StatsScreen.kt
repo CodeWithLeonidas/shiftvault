@@ -1,722 +1,1740 @@
 package com.leonidaskiachidis.shiftvault
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  StatsScreen — "Analytics".
+ *
+ *  Header: big title + Export menu (PDF / Excel), a period pill, then tabs.
+ *    Overview — three stat cards with period-over-period deltas, hours bar
+ *               chart, shift-distribution donut, earnings trend, insights,
+ *               rest / day-off tiles
+ *    Shifts   — per-template breakdown rows (tap for the detail sheet)
+ *    Earnings — total plus earnings per shift type with share bars
+ *    Trends   — earnings over time, bucketed by day or week
+ *
+ *  Charts are plain Canvas / layout draws, no chart dependency.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.BatteryChargingFull
-import androidx.compose.material.icons.filled.BatterySaver
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.HourglassBottom
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.OfflineBolt
-import androidx.compose.material.icons.filled.WatchLater
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.leonidaskiachidis.shiftvault.ui.theme.*
+import com.leonidaskiachidis.shiftvault.ui.theme.AppTheme
 import java.time.LocalDate
 import java.time.YearMonth
-import kotlin.text.format
-import kotlin.toString
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.log10
+import kotlin.math.pow
 
-enum class StatsMode {
-    MONTHLY, YEARLY, CUSTOM
+enum class StatsMode { MONTHLY, YEARLY, CUSTOM }
+
+private enum class StatsTab(val label: String) {
+    OVERVIEW("Overview"), SHIFTS("Shifts"), EARNINGS("Earnings"), TRENDS("Trends")
 }
+
+private enum class Bucket(val label: String) { DAY("By day"), WEEK("By week") }
+
+private val entryDateFmt = DateTimeFormatter.ofPattern("EEE, MMM d")
+private val shortDateFmt = DateTimeFormatter.ofPattern("MMM d")
+private val longDateFmt = DateTimeFormatter.ofPattern("MMM d, yyyy")
+private val fullDateFmt = DateTimeFormatter.ofPattern("EEEE, MMM d, yyyy")
+
+private const val FallbackSlate = 0xFF9AA1AC
+
+// ══════════════════════════════════════════════════════════════
+//  Screen
+// ══════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatsScreen(
-    savedShifts: Map<java.time.LocalDate, List<Shift>>,
+    /**
+     * Already narrowed to [activeProfile] by the caller, so every figure on this
+     * screen — totals, deltas, charts, exports — is that job's and only that
+     * job's. Grouping the *unfiltered* map by jobId is what a future
+     * "compare my jobs" view would do instead.
+     */
+    savedShifts: Map<LocalDate, List<Shift>>,
     onBackClick: () -> Unit,
     currencyCode: String = "EUR",
+    onExportPdf: () -> Unit = {},
+    onExportExcel: () -> Unit = {},
+    activeProfile: JobProfile = JobProfile.Default,
+    onOpenProfiles: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var currentMode by remember { mutableStateOf(StatsMode.MONTHLY) }
-    var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
-    var selectedYear by remember { mutableStateOf(java.time.Year.now()) }
-    var startDate by remember { mutableStateOf(java.time.LocalDate.now().minusWeeks(1)) }
-    var endDate by remember { mutableStateOf(java.time.LocalDate.now()) }
-    var showRangePicker by remember { mutableStateOf(false) }
+    // Saveable (java.time types are Serializable), so the period the user
+    // picked survives rotation and a trip to another tab.
+    var mode by rememberSaveable { mutableStateOf(StatsMode.MONTHLY) }
+    var tab by rememberSaveable { mutableStateOf(StatsTab.OVERVIEW) }
+    var bucket by rememberSaveable { mutableStateOf(Bucket.WEEK) }
 
-    val stats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, currentMode) {
-        when (currentMode) {
+    var selectedMonth by rememberSaveable { mutableStateOf(YearMonth.now()) }
+    var selectedYear by rememberSaveable { mutableStateOf(java.time.Year.now()) }
+    var startDate by rememberSaveable { mutableStateOf(LocalDate.now().minusWeeks(1)) }
+    var endDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
+
+    var exportMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var showPeriodSheet by rememberSaveable { mutableStateOf(false) }
+    var showRangePicker by rememberSaveable { mutableStateOf(false) }
+    var selectedBreakdown by rememberSaveable { mutableStateOf<String?>(null) }
+    var showDaysOff by rememberSaveable { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    val stats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode) {
+        when (mode) {
             StatsMode.MONTHLY -> StatsHelper.calculateMonthlyStats(savedShifts, selectedMonth)
             StatsMode.YEARLY -> StatsHelper.calculateYearlyStats(savedShifts, selectedYear)
             StatsMode.CUSTOM -> StatsHelper.calculateRangeStats(savedShifts, startDate, endDate)
         }
     }
 
+    // Previous comparable period — drives the deltas on the stat cards.
+    val prevStats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode) {
+        when (mode) {
+            StatsMode.MONTHLY ->
+                StatsHelper.calculateMonthlyStats(savedShifts, selectedMonth.minusMonths(1))
+            StatsMode.YEARLY ->
+                StatsHelper.calculateYearlyStats(savedShifts, selectedYear.minusYears(1))
+            StatsMode.CUSTOM -> {
+                val len = ChronoUnit.DAYS.between(startDate, endDate) + 1
+                StatsHelper.calculateRangeStats(
+                    savedShifts,
+                    startDate.minusDays(len),
+                    startDate.minusDays(1)
+                )
+            }
+        }
+    }
+
+    val deltaSuffix = when (mode) {
+        StatsMode.MONTHLY -> "vs last mo"
+        StatsMode.YEARLY -> "vs last yr"
+        StatsMode.CUSTOM -> "vs prev"
+    }
+
+    // Period bounds — used by the charts and the header pill.
+    val periodStart = remember(mode, selectedMonth, selectedYear, startDate) {
+        when (mode) {
+            StatsMode.MONTHLY -> selectedMonth.atDay(1)
+            StatsMode.YEARLY -> LocalDate.of(selectedYear.value, 1, 1)
+            StatsMode.CUSTOM -> startDate
+        }
+    }
+    val periodEnd = remember(mode, selectedMonth, selectedYear, endDate) {
+        when (mode) {
+            StatsMode.MONTHLY -> selectedMonth.atEndOfMonth()
+            StatsMode.YEARLY -> LocalDate.of(selectedYear.value, 12, 31)
+            StatsMode.CUSTOM -> endDate
+        }
+    }
+    val periodLabel = remember(mode, selectedMonth, selectedYear, startDate, endDate) {
+        when (mode) {
+            StatsMode.MONTHLY ->
+                "${selectedMonth.month.name.lowercase().replaceFirstChar { it.uppercase() }} ${selectedMonth.year}"
+            StatsMode.YEARLY -> selectedYear.toString()
+            StatsMode.CUSTOM -> "${startDate.format(shortDateFmt)} – ${endDate.format(longDateFmt)}"
+        }
+    }
+
+    // Name to colour, built once per data change instead of scanning inside rows.
+    val colorByName = remember(savedShifts) {
+        val m = HashMap<String, Long>()
+        for (list in savedShifts.values) for (s in list) m.putIfAbsent(s.name, s.colorValue)
+        m
+    }
+
+    // Earnings per day inside the period — source for the trend chart & insights.
+    val dailyEarnings = remember(savedShifts, periodStart, periodEnd) {
+        val out = HashMap<LocalDate, Double>()
+        for ((date, list) in savedShifts) {
+            if (date.isBefore(periodStart) || date.isAfter(periodEnd)) continue
+            val sum = list.sumOf { PayEngine.earnings(it) }
+            if (sum != 0.0) out[date] = sum
+        }
+        out
+    }
+
+    // Worked hours per day inside the period.
+    val dailyHours = remember(savedShifts, periodStart, periodEnd) {
+        val out = HashMap<LocalDate, Double>()
+        for ((date, list) in savedShifts) {
+            if (date.isBefore(periodStart) || date.isAfter(periodEnd)) continue
+            val h = list.filter { PayEngine.isWorked(it) }.sumOf { PayEngine.workedHours(it) }
+            if (h > 0.0) out[date] = h
+        }
+        out
+    }
+
+    val hourBuckets = remember(dailyHours, mode, selectedMonth, selectedYear, startDate, endDate) {
+        buildHourBuckets(dailyHours, mode, selectedMonth, selectedYear, startDate, endDate)
+    }
+
+    val insights = remember(dailyHours, dailyEarnings, stats, mode, selectedMonth) {
+        buildInsights(dailyHours, dailyEarnings, stats, mode, selectedMonth)
+    }
+
+    val spanDays = remember(periodStart, periodEnd) {
+        (ChronoUnit.DAYS.between(periodStart, periodEnd) + 1).toInt().coerceAtLeast(1)
+    }
+    // Daily buckets stop being readable past about two months, so force weeks there.
+    val effectiveBucket = if (spanDays > 62) Bucket.WEEK else bucket
+
+    val series = remember(dailyEarnings, effectiveBucket, periodStart, spanDays) {
+        buildSeries(dailyEarnings, periodStart, spanDays, effectiveBucket)
+    }
+
     val currencySymbol = remember(currencyCode) {
-        java.util.Currency.getInstance(currencyCode).getSymbol(java.util.Locale.getDefault())
+        try { java.util.Currency.getInstance(currencyCode).getSymbol(java.util.Locale.getDefault()) }
+        catch (_: Exception) { currencyCode }
     }
 
-    val accentColor = MaterialTheme.colorScheme.primary
+    val cs = MaterialTheme.colorScheme
+    val accents = AppTheme.accents
+    val accent = cs.primary
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "Statistics",
-                            style = MaterialTheme.typography.headlineLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = when (currentMode) {
-                                StatsMode.MONTHLY -> selectedMonth.month.name.lowercase()
-                                    .replaceFirstChar { it.uppercase() } + " ${selectedMonth.year}"
-                                StatsMode.YEARLY -> selectedYear.toString()
-                                StatsMode.CUSTOM -> "${startDate.format(java.time.format.DateTimeFormatter.ofPattern("MMM d"))} – ${endDate.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy"))}"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f)
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
-                )
-            )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 40.dp)
-        ) {
-            // ── Mode Selector ──
-            item(key = "mode_selector") {
-                Spacer(modifier = Modifier.height(12.dp))
-                StatsPillSelector(
-                    currentMode = currentMode,
-                    onModeChange = { currentMode = it },
-                    accentColor = accentColor,
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                )
-            }
-
-            // ── Range Navigator ──
-            item(key = "range_nav") {
-                Spacer(modifier = Modifier.height(8.dp))
-                when (currentMode) {
-                    StatsMode.MONTHLY -> SlimRangeNavigator(
-                        label = selectedMonth.month.name.lowercase()
-                            .replaceFirstChar { it.uppercase() },
-                        subtitle = selectedMonth.year.toString(),
-                        onPrevious = { selectedMonth = selectedMonth.minusMonths(1) },
-                        onNext = { selectedMonth = selectedMonth.plusMonths(1) },
-                        accentColor = accentColor,
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                    StatsMode.YEARLY -> SlimRangeNavigator(
-                        label = selectedYear.toString(),
-                        subtitle = null,
-                        onPrevious = { selectedYear = selectedYear.minusYears(1) },
-                        onNext = { selectedYear = selectedYear.plusYears(1) },
-                        accentColor = accentColor,
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                    StatsMode.CUSTOM -> SlimCustomRangeButton(
-                        start = startDate,
-                        end = endDate,
-                        accentColor = accentColor,
-                        onClick = { showRangePicker = true },
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                }
-            }
-
-            // ── Hero Earnings Card ──
-            item(key = "hero_earnings") {
-                Spacer(modifier = Modifier.height(16.dp))
-                HeroEarningsCard(
-                    earnings = stats.estimatedEarnings,
-                    currencySymbol = currencySymbol,
-                    totalShifts = stats.totalShifts,
-                    accentColor = accentColor,
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                )
-            }
-
-            // ── Metric Grid ──
-            item(key = "metrics") {
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        MetricTile(
-                            label = "Total Hours",
-                            value = StatsHelper.formatHours(stats.totalHours),
-                            icon = Icons.Default.WatchLater,
-                            modifier = Modifier.weight(1f)
-                        )
-                        MetricTile(
-                            label = "Avg / Shift",
-                            value = StatsHelper.formatHours(stats.averageHoursPerShift),
-                            icon = Icons.Default.HourglassBottom,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        MetricTile(
-                            label = "Rest Days",
-                            value = "${stats.restDays}",
-                            icon = Icons.Default.DateRange,
-                            tintColor = Color(0xFF06B6D4),
-                            modifier = Modifier.weight(1f)
-                        )
-                        MetricTile(
-                            label = "Holidays",
-                            value = "${stats.holidayDays}",
-                            icon = Icons.Default.BatteryChargingFull,
-                            tintColor = Color(0xFF4CAF50),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
-
-            // ── Breakdown Header ──
-            item(key = "breakdown_header") {
-                Spacer(modifier = Modifier.height(20.dp))
-                Row(
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(3.dp, 16.dp)
-                            .background(accentColor, RoundedCornerShape(2.dp))
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "SHIFT BREAKDOWN",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.5.sp,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
-                    )
-                }
-            }
-
-            // ── Breakdown List or Empty ──
-            if (stats.totalShifts == 0) {
-                item(key = "empty") {
-                    SlimEmptyStatsView(modifier = Modifier.padding(horizontal = 24.dp))
-                }
-            } else {
-                items(
-                    items = stats.shiftBreakdown.toList(),
-                    key = { it.first }
-                ) { (shiftName, count) ->
-                    SlimBreakdownRow(
-                        name = shiftName,
-                        count = count,
-                        total = stats.totalShifts,
-                        shiftColor = findShiftColor(savedShifts, shiftName),
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                }
-            }
-        }
-    }
-
-    // ── Date Range Picker Dialog ──
-    if (showRangePicker) {
-        val dateRangePickerState = rememberDateRangePickerState()
-        DatePickerDialog(
-            onDismissRequest = { showRangePicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    val s = dateRangePickerState.selectedStartDateMillis
-                    val e = dateRangePickerState.selectedEndDateMillis
-                    if (s != null && e != null) {
-                        startDate = java.time.Instant.ofEpochMilli(s)
-                            .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
-                        endDate = java.time.Instant.ofEpochMilli(e)
-                            .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
-                    }
-                    showRangePicker = false
-                }) { Text("Confirm") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRangePicker = false }) { Text("Cancel") }
-            }
-        ) {
-            DateRangePicker(
-                state = dateRangePickerState,
-                modifier = Modifier.height(500.dp),
-                title = { Text("Select Range", modifier = Modifier.padding(16.dp)) },
-                headline = {
-                    Text(
-                        "Select work period",
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                },
-                showModeToggle = false,
-                colors = DatePickerDefaults.colors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    todayContentColor = MaterialTheme.colorScheme.primary,
-                    selectedDayContainerColor = MaterialTheme.colorScheme.primary,
-                    dayInSelectionRangeContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                )
-            )
-        }
-    }
-}
-
-// ── Helper: find a shift's color from the saved data ──
-private fun findShiftColor(
-    savedShifts: Map<java.time.LocalDate, List<Shift>>,
-    shiftName: String
-): Color {
-    val colorValue = savedShifts.values.flatten()
-        .firstOrNull { it.name == shiftName }?.colorValue
-    return if (colorValue != null) Color(colorValue.toInt()) else Color(0xFF6366F1)
-}
-
-// ── Pill Mode Selector ──
-@Composable
-private fun StatsPillSelector(
-    currentMode: StatsMode,
-    onModeChange: (StatsMode) -> Unit,
-    accentColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val modes = remember { StatsMode.entries.toList() }
-    val labels = remember { listOf("Month", "Year", "Custom") }
-
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(cs.background)
+            .statusBarsPadding()
     ) {
+        // ── Header ──
+        ScreenHeader(
+            title = "Analytics",
+            trailing = {
+                Box {
+                    PillButton(
+                        text = "Export",
+                        onClick = { exportMenuOpen = true },
+                        icon = AppIcons.Upload
+                    )
+                    DropdownMenu(
+                        expanded = exportMenuOpen,
+                        onDismissRequest = { exportMenuOpen = false },
+                        shape = MaterialTheme.shapes.medium,
+                        containerColor = cs.surface
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Export to PDF",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = cs.onSurface
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(AppIcons.PictureAsPdf, null, Modifier.size(18.dp), tint = cs.primary)
+                            },
+                            onClick = { exportMenuOpen = false; onExportPdf() }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Export to Excel",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = cs.onSurface
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(AppIcons.TableChart, null, Modifier.size(18.dp), tint = cs.primary)
+                            },
+                            onClick = { exportMenuOpen = false; onExportExcel() }
+                        )
+                    }
+                }
+            }
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        // ── Scope: which job, then which period ──
+        //
+        // Read left to right they say exactly what the numbers below cover.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = AppSpace.screenH),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            modes.forEachIndexed { index, mode ->
-                val isSelected = currentMode == mode
-                val bgAlpha by animateFloatAsState(
-                    targetValue = if (isSelected) 1f else 0f,
-                    animationSpec = tween(220), label = "pillBg"
+            ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
+            PillButton(
+                text = periodLabel,
+                onClick = { showPeriodSheet = true },
+                icon = AppIcons.DateRange,
+                tinted = true
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Tabs ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = AppSpace.screenH),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            StatsTab.entries.forEach { t ->
+                FilterPill(
+                    text = t.label,
+                    selected = t == tab,
+                    onClick = { tab = t }
                 )
-                Surface(
-                    onClick = { onModeChange(mode) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(38.dp),
-                    shape = RoundedCornerShape(11.dp),
-                    color = if (isSelected) MaterialTheme.colorScheme.background
-                    else Color.Transparent,
-                    shadowElevation = if (isSelected) 2.dp else 0.dp
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = labels[index],
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) accentColor
-                            else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                        )
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            contentPadding = PaddingValues(
+                start = AppSpace.screenH,
+                end = AppSpace.screenH,
+                top = 2.dp,
+                bottom = 32.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            when (tab) {
+
+                // ═════════════ OVERVIEW ═════════════
+                StatsTab.OVERVIEW -> {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            val hoursDelta = pctDelta(stats.totalHours, prevStats.totalHours)
+                            val earnDelta = pctDelta(stats.estimatedEarnings, prevStats.estimatedEarnings)
+                            val avgDiff = stats.averageHoursPerShift - prevStats.averageHoursPerShift
+
+                            StatCard(
+                                label = "Hours",
+                                value = compactHours(stats.totalHours),
+                                modifier = Modifier.weight(1f),
+                                delta = deltaText(hoursDelta, deltaSuffix),
+                                deltaPositive = hoursDelta?.let { it >= 0 }
+                            )
+                            StatCard(
+                                label = "Earnings",
+                                value = shortMoney(currencySymbol, stats.estimatedEarnings),
+                                modifier = Modifier.weight(1f),
+                                delta = deltaText(earnDelta, null),
+                                deltaPositive = earnDelta?.let { it >= 0 }
+                            )
+                            StatCard(
+                                label = "Avg shift",
+                                value = compactHours(stats.averageHoursPerShift),
+                                modifier = Modifier.weight(1f),
+                                delta = when {
+                                    prevStats.totalShifts == 0 -> "—"
+                                    abs(avgDiff) < 0.25 -> "Stable"
+                                    avgDiff > 0 -> "+${compactHours(avgDiff)}"
+                                    else -> "-${compactHours(abs(avgDiff))}"
+                                },
+                                deltaPositive = when {
+                                    prevStats.totalShifts == 0 || abs(avgDiff) < 0.25 -> null
+                                    else -> avgDiff > 0
+                                }
+                            )
+                        }
+                    }
+
+                    // ── Hours worked ──
+                    item {
+                        StatsCard(
+                            title = "Hours worked",
+                            subtitle = bucketSubtitle(mode, selectedMonth, selectedYear)
+                        ) {
+                            if (hourBuckets.all { it.hours <= 0.0 }) {
+                                EmptyNote("No hours recorded in this period")
+                            } else {
+                                Spacer(Modifier.height(18.dp))
+                                HoursBars(hourBuckets)
+                            }
+                        }
+                    }
+
+                    // ── Shift distribution ──
+                    item {
+                        StatsCard(title = "Shift distribution") {
+                            if (stats.totalShifts == 0) {
+                                EmptyNote("No shifts in this period")
+                            } else {
+                                Spacer(Modifier.height(18.dp))
+                                HoursDonut(
+                                    stats.shiftBreakdownHours,
+                                    stats.totalHours,
+                                    colorByName
+                                )
+                            }
+                        }
+                    }
+
+                    // ── Earnings trend ──
+                    item {
+                        val growth = pctDelta(stats.estimatedEarnings, prevStats.estimatedEarnings)
+                        StatsCard(
+                            title = "Earnings trend",
+                            trailing = {
+                                if (growth != null) {
+                                    val up = growth >= 0
+                                    SoftBadge(
+                                        text = "${if (up) "+" else ""}${"%.1f".format(growth)}%",
+                                        container = if (up) accents.morningSoft
+                                        else accents.negative.copy(alpha = 0.12f),
+                                        contentColor = if (up) accents.positive else accents.negative
+                                    )
+                                }
+                            }
+                        ) {
+                            Spacer(Modifier.height(18.dp))
+                            if (series.size < 2) {
+                                EmptyNote("Not enough data to chart yet")
+                            } else {
+                                EarningsChart(series, currencySymbol, accent)
+                            }
+                        }
+                    }
+
+                    // ── Insights ──
+                    if (insights.isNotEmpty()) {
+                        item {
+                            StatsCard(title = "Insights") {
+                                Spacer(Modifier.height(6.dp))
+                                insights.forEachIndexed { index, insight ->
+                                    if (index > 0) Spacer(Modifier.height(4.dp))
+                                    InsightRow(insight, currencySymbol)
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Rest / days off ──
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            MetricTile(
+                                "Rest days", "${stats.restDays}", AppIcons.Weekend, accents.evening,
+                                clickable = false, modifier = Modifier.weight(1f)
+                            )
+                            MetricTile(
+                                "Days off", "${stats.dayOffDays}", AppIcons.BeachAccess, accents.morning,
+                                stats.dayOffDays > 0, Modifier.weight(1f)
+                            ) { showDaysOff = true }
+                        }
+                    }
+                }
+
+                // ═════════════ SHIFTS ═════════════
+                StatsTab.SHIFTS -> {
+                    if (stats.totalShifts == 0) {
+                        item {
+                            EmptyState(
+                                "No shifts in this period",
+                                "Add shifts to your calendar and they'll show up here."
+                            )
+                        }
+                    } else {
+                        items(stats.shiftBreakdown.toList(), key = { it.first }) { (name, count) ->
+                            BreakdownRow(
+                                name, count,
+                                stats.shiftBreakdownHours[name] ?: 0.0, stats.totalHours,
+                                rememberShiftAccent(colorByName[name] ?: FallbackSlate)
+                            ) { selectedBreakdown = name }
+                        }
+                    }
+                }
+
+                // ═════════════ EARNINGS ═════════════
+                StatsTab.EARNINGS -> {
+                    item {
+                        SoftCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.large
+                        ) {
+                            Text(
+                                "Total earnings",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = cs.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "$currencySymbol${"%,.2f".format(stats.estimatedEarnings)}",
+                                style = MaterialTheme.typography.headlineLarge,
+                                color = cs.onSurface,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "${StatsHelper.formatHours(stats.totalHours)} worked · ${stats.totalShifts} shift${if (stats.totalShifts != 1) "s" else ""}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (stats.totalShifts == 0) {
+                        item {
+                            EmptyState(
+                                "Nothing earned yet",
+                                "Set an hourly rate on your shifts to see earnings here."
+                            )
+                        }
+                    } else {
+                        item {
+                            StatsCard(title = "Earnings by shift type") {
+                                Spacer(Modifier.height(18.dp))
+                                val rows = remember(stats) {
+                                    stats.shiftBreakdownEntries
+                                        .map { (name, entries) -> name to entries.sumOf { it.earnings } }
+                                        .sortedByDescending { it.second }
+                                }
+                                val top = rows.firstOrNull()?.second ?: 0.0
+                                rows.forEachIndexed { index, pair ->
+                                    if (index > 0) Spacer(Modifier.height(16.dp))
+                                    EarningsRow(
+                                        pair.first, pair.second, top, currencySymbol,
+                                        rememberShiftAccent(colorByName[pair.first] ?: FallbackSlate)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ═════════════ TRENDS ═════════════
+                StatsTab.TRENDS -> {
+                    item {
+                        StatsCard(
+                            title = "Earnings over time",
+                            trailing = {
+                                if (spanDays <= 62) {
+                                    BucketToggle(bucket) { bucket = it }
+                                } else {
+                                    Text(
+                                        "By week",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = cs.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        ) {
+                            Spacer(Modifier.height(18.dp))
+                            if (series.size < 2) {
+                                EmptyNote("Not enough data to chart yet")
+                            } else {
+                                EarningsChart(series, currencySymbol, accent)
+                            }
+                        }
+                    }
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            val perShift = if (stats.totalShifts > 0)
+                                stats.estimatedEarnings / stats.totalShifts else 0.0
+                            MetricTile(
+                                "Avg per shift", shortMoney(currencySymbol, perShift),
+                                AppIcons.Payments, accents.evening, false, Modifier.weight(1f)
+                            ) {}
+                            MetricTile(
+                                "Avg hours", compactHours(stats.averageHoursPerShift),
+                                AppIcons.Schedule, accents.morning, false, Modifier.weight(1f)
+                            ) {}
+                        }
                     }
                 }
             }
         }
     }
-}
 
-// ── Slim Range Navigator ──
-@Composable
-private fun SlimRangeNavigator(
-    label: String,
-    subtitle: String?,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
-    accentColor: Color,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        IconButton(
-            onClick = onPrevious,
-            modifier = Modifier
-                .size(40.dp)
-                .background(
-                    accentColor.copy(alpha = 0.08f),
-                    RoundedCornerShape(12.dp)
-                )
+    // ══════════════════════════════════════════════════════════
+    //  Period sheet
+    // ══════════════════════════════════════════════════════════
+    if (showPeriodSheet) {
+        StatsSheet(
+            onDismiss = { showPeriodSheet = false },
+            sheetState = sheetState,
+            title = "Period"
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                contentDescription = "Previous",
-                tint = accentColor,
-                modifier = Modifier.size(22.dp)
-            )
-        }
-
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            subtitle?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f)
+            Spacer(Modifier.height(18.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(CircleShape)
+                    .background(cs.surfaceVariant)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(
+                    StatsMode.MONTHLY to "Month",
+                    StatsMode.YEARLY to "Year",
+                    StatsMode.CUSTOM to "Custom"
+                ).forEach { pair ->
+                    val selected = pair.first == mode
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(CircleShape)
+                            .background(if (selected) accent else Color.Transparent)
+                            .clickable { mode = pair.first }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            pair.second,
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            color = if (selected) cs.onPrimary else cs.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            when (mode) {
+                StatsMode.MONTHLY -> Stepper(
+                    selectedMonth.month.name.lowercase().replaceFirstChar { it.uppercase() },
+                    selectedMonth.year.toString(),
+                    { selectedMonth = selectedMonth.minusMonths(1) },
+                    { selectedMonth = selectedMonth.plusMonths(1) }
                 )
+                StatsMode.YEARLY -> Stepper(
+                    selectedYear.toString(), null,
+                    { selectedYear = selectedYear.minusYears(1) },
+                    { selectedYear = selectedYear.plusYears(1) }
+                )
+                StatsMode.CUSTOM -> Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.large)
+                        .background(cs.background)
+                        .border(1.dp, cs.outline, MaterialTheme.shapes.large)
+                        .clickable { showRangePicker = true }
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(AppIcons.DateRange, null, tint = accent, modifier = Modifier.size(19.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "${startDate.format(shortDateFmt)} – ${endDate.format(longDateFmt)}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = cs.onSurface,
+                        modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                    Icon(
+                        AppIcons.Edit, null,
+                        tint = cs.onSurfaceVariant, modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
-
-        IconButton(
-            onClick = onNext,
-            modifier = Modifier
-                .size(40.dp)
-                .background(
-                    accentColor.copy(alpha = 0.08f),
-                    RoundedCornerShape(12.dp)
-                )
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "Next",
-                tint = accentColor,
-                modifier = Modifier.size(22.dp)
-            )
-        }
     }
-}
 
-// ── Custom Range Button ──
-@Composable
-private fun SlimCustomRangeButton(
-    start: LocalDate,
-    end: LocalDate,
-    accentColor: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val formatter = remember { java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy") }
-    Surface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = accentColor.copy(alpha = 0.06f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp, accentColor.copy(alpha = 0.15f)
+    // ══════════════════════════════════════════════════════════
+    //  Breakdown detail sheet
+    // ══════════════════════════════════════════════════════════
+    selectedBreakdown?.let { name ->
+        val entries = stats.shiftBreakdownEntries[name] ?: emptyList()
+        val color = ShiftColors.accent(
+            Color((colorByName[name] ?: FallbackSlate).toInt()),
+            accents.isDark
         )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        val totalH = stats.shiftBreakdownHours[name] ?: 0.0
+        val totalEarn = entries.sumOf { it.earnings }
+
+        ModalBottomSheet(
+            onDismissRequest = { selectedBreakdown = null },
+            sheetState = sheetState,
+            containerColor = cs.surface,
+            contentColor = cs.onSurface,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            dragHandle = { StatsSheetHandle() }
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Icon(
-                    imageVector = Icons.Default.DateRange,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.82f)
+                    .padding(horizontal = 22.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(12.dp).clip(CircleShape).background(color))
+                    Spacer(Modifier.width(11.dp))
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.displayMedium,
+                        color = cs.onSurface,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Text(
-                    text = "${start.format(formatter)} – ${end.format(formatter)}",
+                    "${entries.size} occurrence${if (entries.size != 1) "s" else ""} · ${StatsHelper.formatHours(totalH)}",
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 5.dp, bottom = 18.dp)
                 )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.large)
+                        .background(color.copy(alpha = 0.14f))
+                        .padding(vertical = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    SheetStat("Total", StatsHelper.formatHours(totalH))
+                    SheetStat(
+                        "Avg/shift",
+                        StatsHelper.formatHours(if (entries.isNotEmpty()) totalH / entries.size else 0.0)
+                    )
+                    if (totalEarn > 0) {
+                        SheetStat("Earnings", shortMoney(currencySymbol, totalEarn))
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                LazyColumn(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .nestedScroll(SheetScrollLock),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(entries) { e -> EntryRow(e, color, currencySymbol) }
+                }
             }
-            Icon(
-                imageVector = Icons.Default.Edit,
-                contentDescription = "Edit Range",
-                tint = accentColor.copy(alpha = 0.5f),
-                modifier = Modifier.size(16.dp)
+        }
+    }
+
+    if (showDaysOff) {
+        ModalBottomSheet(
+            onDismissRequest = { showDaysOff = false },
+            sheetState = sheetState,
+            containerColor = cs.surface,
+            contentColor = cs.onSurface,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            dragHandle = { StatsSheetHandle() }
+        ) {
+            DayListSheet(
+                "Days off",
+                "${stats.dayOffDays} day${if (stats.dayOffDays != 1) "s" else ""} off",
+                stats.dayOffDates, accents.morning, AppIcons.BeachAccess,
+                "No days off in this period"
             )
+        }
+    }
+
+    if (showRangePicker) {
+        val rangeState = rememberDateRangePickerState(
+            initialSelectedStartDateMillis = startDate.toEpochDay() * 86_400_000L,
+            initialSelectedEndDateMillis = endDate.toEpochDay() * 86_400_000L
+        )
+        DatePickerDialog(
+            onDismissRequest = { showRangePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        // Picking only a start date means a single day. The old
+                        // code kept the previous end date, which could now fall
+                        // before the new start and leave an inverted range.
+                        val start = rangeState.selectedStartDateMillis
+                            ?.let { LocalDate.ofEpochDay(it / 86_400_000L) }
+                        if (start != null) {
+                            val end = rangeState.selectedEndDateMillis
+                                ?.let { LocalDate.ofEpochDay(it / 86_400_000L) }
+                                ?.takeIf { !it.isBefore(start) }
+                                ?: start
+                            startDate = start
+                            endDate = end
+                        }
+                        showRangePicker = false
+                    },
+                    enabled = rangeState.selectedStartDateMillis != null
+                ) { Text("Apply", style = MaterialTheme.typography.labelLarge) }
+            },
+            dismissButton = { TextButton(onClick = { showRangePicker = false }) { Text("Cancel") } }
+        ) {
+            DateRangePicker(state = rangeState, modifier = Modifier.weight(1f))
         }
     }
 }
 
-// ── Hero Earnings Card ──
-@Composable
-private fun HeroEarningsCard(
-    earnings: Double,
-    currencySymbol: String,
-    totalShifts: Int,
-    accentColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val animatedEarnings by animateFloatAsState(
-        targetValue = earnings.toFloat(),
-        animationSpec = tween(durationMillis = 600, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-        label = "earningsAnim"
-    )
+// ══════════════════════════════════════════════════════════════
+//  Card shell
+// ══════════════════════════════════════════════════════════════
 
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = accentColor.copy(alpha = 0.07f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp, accentColor.copy(alpha = 0.12f)
-        )
+@Composable
+private fun StatsCard(
+    title: String,
+    subtitle: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    SoftCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large
     ) {
-        Column(
-            modifier = Modifier.padding(24.dp)
-        ) {
-            Text(
-                text = "ESTIMATED EARNINGS",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp,
-                color = accentColor.copy(alpha = 0.6f)
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                verticalAlignment = Alignment.Bottom
-            ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = currencySymbol,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = accentColor.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 4.dp)
+                    title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = cs.onSurface,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = String.format("%.2f", animatedEarnings),
-                    style = MaterialTheme.typography.displaySmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                if (subtitle != null) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            if (trailing != null) {
+                Spacer(Modifier.width(10.dp))
+                trailing()
+            }
+        }
+        content()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Hours bar chart
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun HoursBars(buckets: List<HourBucket>) {
+    val cs = MaterialTheme.colorScheme
+    val max = buckets.maxOfOrNull { it.hours } ?: 0.0
+    if (max <= 0.0) {
+        EmptyNote("No hours recorded in this period")
+        return
+    }
+    val peakIndex = buckets.indexOfFirst { it.hours == max }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(170.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (buckets.size > 8) 4.dp else 10.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            buckets.forEachIndexed { index, b ->
+                val ratio = (b.hours / max).toFloat().coerceIn(0f, 1f)
+                val isPeak = index == peakIndex
                 Box(
                     modifier = Modifier
-                        .size(6.dp)
-                        .background(accentColor, CircleShape)
+                        .weight(1f)
+                        .fillMaxHeight(if (ratio < 0.06f) 0.06f else ratio)
+                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                        .background(
+                            if (isPeak) cs.primary
+                            else cs.primary.copy(alpha = 0.28f + 0.32f * ratio)
+                        )
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(if (buckets.size > 8) 4.dp else 10.dp)
+        ) {
+            buckets.forEachIndexed { index, b ->
                 Text(
-                    text = "$totalShifts shift${if (totalShifts != 1) "s" else ""} recorded",
+                    b.label,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (index == peakIndex) cs.primary else cs.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Peak: ${buckets[peakIndex].label} · ${StatsHelper.formatHours(max)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.onSurfaceVariant
+        )
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Donut
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun HoursDonut(
+    hoursByName: Map<String, Double>,
+    totalHours: Double,
+    colorByName: Map<String, Long>
+) {
+    val cs = MaterialTheme.colorScheme
+    val isDark = AppTheme.accents.isDark
+    val slices = remember(hoursByName, colorByName, isDark) {
+        hoursByName.entries
+            .filter { it.value > 0.0 }
+            .sortedByDescending { it.value }
+            .map {
+                Triple(
+                    it.key,
+                    it.value,
+                    ShiftColors.accent(Color((colorByName[it.key] ?: FallbackSlate).toInt()), isDark)
+                )
+            }
+    }
+    if (slices.isEmpty() || totalHours <= 0.0) {
+        EmptyNote("No hours recorded")
+        return
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(130.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.fillMaxSize()) {
+                val strokePx = 18.dp.toPx()
+                val diameter = size.minDimension - strokePx
+                val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+                val arcSize = Size(diameter, diameter)
+                var startAngle = -90f
+                slices.forEach { slice ->
+                    val sweep = (slice.second / totalHours * 360.0).toFloat()
+                    drawArc(
+                        color = slice.third,
+                        startAngle = startAngle,
+                        sweepAngle = (sweep - 3f).coerceAtLeast(1f),
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round)
+                    )
+                    startAngle += sweep
+                }
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    compactHours(totalHours),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = cs.onSurface
+                )
+                Text(
+                    "total",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.width(18.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            slices.take(5).forEach { slice ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(slice.third))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        slice.first,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = cs.onSurface,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "${(slice.second / totalHours * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurface,
+                        maxLines = 1
+                    )
+                }
+            }
+            if (slices.size > 5) {
+                Text(
+                    "+${slices.size - 5} more",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
+                    color = cs.onSurfaceVariant
                 )
             }
         }
     }
 }
 
-// ── Metric Tile ──
+// ══════════════════════════════════════════════════════════════
+//  Line chart
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun BucketToggle(current: Bucket, onChange: (Bucket) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Bucket.entries.forEach { b ->
+            TextTab(text = b.label, selected = b == current, onClick = { onChange(b) })
+        }
+    }
+}
+
+@Composable
+private fun EarningsChart(
+    series: List<Pair<LocalDate, Double>>,
+    currencySymbol: String,
+    accent: Color
+) {
+    val cs = MaterialTheme.colorScheme
+    val maxValue = remember(series) { niceCeil(series.maxOf { it.second }) }
+    val gridColor = cs.outline
+    val yLabels = remember(maxValue, currencySymbol) {
+        (3 downTo 0).map { shortMoney(currencySymbol, maxValue * it / 3.0) }
+    }
+    val xLabels = remember(series) {
+        val n = series.size
+        listOf(0, (n - 1) / 3, (n - 1) * 2 / 3, n - 1)
+            .distinct()
+            .map { series[it].first.format(shortDateFmt) }
+    }
+
+    Row(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.height(160.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.End
+        ) {
+            yLabels.forEach {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Canvas(Modifier.weight(1f).height(160.dp)) {
+            for (i in 0..3) {
+                val y = size.height * i / 3f
+                drawLine(gridColor, Offset(0f, y), Offset(size.width, y), 1f)
+            }
+
+            if (series.size < 2) return@Canvas
+
+            val stepX = size.width / (series.size - 1)
+            val line = Path()
+            val fill = Path()
+            var lastY = size.height
+
+            series.forEachIndexed { i, point ->
+                val x = i * stepX
+                val ratio = (point.second / maxValue).toFloat().coerceIn(0f, 1f)
+                val y = size.height - ratio * size.height
+                if (i == 0) {
+                    line.moveTo(x, y)
+                    fill.moveTo(x, size.height)
+                    fill.lineTo(x, y)
+                } else {
+                    line.lineTo(x, y)
+                    fill.lineTo(x, y)
+                }
+                lastY = y
+            }
+            fill.lineTo(size.width, size.height)
+            fill.close()
+
+            drawPath(
+                fill,
+                Brush.verticalGradient(listOf(accent.copy(alpha = 0.22f), accent.copy(alpha = 0f)))
+            )
+            drawPath(
+                line, accent,
+                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            drawCircle(Color.White, radius = 5.5.dp.toPx(), center = Offset(size.width, lastY))
+            drawCircle(
+                accent, radius = 5.5.dp.toPx(), center = Offset(size.width, lastY),
+                style = Stroke(width = 2.5.dp.toPx())
+            )
+        }
+    }
+
+    Spacer(Modifier.height(10.dp))
+    Row(
+        Modifier.fillMaxWidth().padding(start = 52.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        xLabels.forEach {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Rows, tiles, insights
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun InsightRow(insight: Insight, currencySymbol: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(cs.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            val painter = when (insight.iconKey) {
+                InsightIcon.CALENDAR -> AppIcons.CalendarMonth
+                InsightIcon.STAR -> AppIcons.Star
+                InsightIcon.MONEY -> AppIcons.Payments
+                InsightIcon.CHART -> AppIcons.BarChart
+            }
+            Icon(painter, null, tint = cs.primary, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Text(
+            insight.label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = cs.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+            maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            if (insight.isMoney) shortMoney(currencySymbol, insight.money) else insight.value,
+            style = MaterialTheme.typography.titleSmall,
+            color = cs.onSurface,
+            maxLines = 1
+        )
+    }
+}
+
 @Composable
 private fun MetricTile(
     label: String,
     value: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    modifier: Modifier = Modifier,
-    tintColor: Color = MaterialTheme.colorScheme.primary
+    icon: Painter,
+    color: Color,
+    clickable: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit = {}
 ) {
-    Surface(
+    val cs = MaterialTheme.colorScheme
+    SoftCard(
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.06f)
-        )
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(16.dp),
+        onClick = if (clickable) onClick else null
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(tintColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(color.copy(alpha = 0.18f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = tintColor,
-                    modifier = Modifier.size(18.dp)
-                )
+                Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
             }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column {
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = value,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.onBackground
+                    value,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = cs.onSurface,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = label,
+                    label,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
         }
     }
 }
 
-// ── Breakdown Row ──
 @Composable
-private fun SlimBreakdownRow(
+private fun BreakdownRow(
     name: String,
     count: Int,
-    total: Int,
-    shiftColor: Color,
-    modifier: Modifier = Modifier
+    hours: Double,
+    totalHours: Double,
+    color: Color,
+    onClick: () -> Unit
 ) {
-    val fraction = remember(count, total) { if (total > 0) count.toFloat() / total else 0f }
-    val animatedFraction by animateFloatAsState(
-        targetValue = fraction,
-        animationSpec = tween(500, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-        label = "progressAnim"
-    )
-    val percentage = remember(count, total) {
-        if (total > 0) ((count.toFloat() / total) * 100).toInt() else 0
-    }
+    val cs = MaterialTheme.colorScheme
+    val pct = if (totalHours > 0) (hours / totalHours).toFloat().coerceIn(0f, 1f) else 0f
 
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.06f)
-        )
+    SoftCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        onClick = onClick
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(shiftColor, CircleShape)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(11.dp).clip(CircleShape).background(color))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                name,
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "${count}× · ${StatsHelper.formatHours(hours)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = cs.onSurfaceVariant, maxLines = 1
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(CircleShape)
+                .background(cs.surfaceVariant)
+        ) {
+            Box(Modifier.fillMaxWidth(pct).fillMaxHeight().clip(CircleShape).background(color))
+        }
+    }
+}
+
+@Composable
+private fun EarningsRow(
+    name: String,
+    amount: Double,
+    topAmount: Double,
+    currencySymbol: String,
+    color: Color
+) {
+    val cs = MaterialTheme.colorScheme
+    val pct = if (topAmount > 0) (amount / topAmount).toFloat().coerceIn(0f, 1f) else 0f
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = cs.onSurface,
+                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "$currencySymbol${"%,.2f".format(amount)}",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface, maxLines = 1
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(CircleShape)
+                .background(cs.surfaceVariant)
+        ) {
+            Box(Modifier.fillMaxWidth(pct).fillMaxHeight().clip(CircleShape).background(color))
+        }
+    }
+}
+
+@Composable
+private fun EmptyNote(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 16.dp, bottom = 6.dp)
+    )
+}
+
+@Composable
+private fun EmptyState(title: String, body: String) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier.size(80.dp).clip(CircleShape).background(cs.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                AppIcons.BarChart, null,
+                tint = cs.onSurfaceVariant, modifier = Modifier.size(34.dp)
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        Text(title, style = MaterialTheme.typography.titleLarge, color = cs.onBackground)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = cs.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Sheet pieces
+// ══════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StatsSheet(
+    onDismiss: () -> Unit,
+    sheetState: SheetState,
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = cs.surface,
+        contentColor = cs.onSurface,
+        shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+        dragHandle = { StatsSheetHandle() }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp)
+                .padding(bottom = 36.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.displayMedium,
+                color = cs.onSurface
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun StatsSheetHandle() {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(cs.outline))
+    }
+}
+
+@Composable
+private fun Stepper(
+    label: String,
+    subtitle: String?,
+    onPrev: () -> Unit,
+    onNext: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .background(cs.background)
+            .border(1.dp, cs.outline, MaterialTheme.shapes.large)
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircleIconButton(
+            icon = AppIcons.ChevronLeft,
+            contentDescription = "Previous",
+            onClick = onPrev,
+            diameter = 44.dp,
+            iconSize = 19.dp,
+            container = cs.surfaceVariant,
+            tint = cs.onSurfaceVariant,
+            elevation = 0.dp
+        )
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle != null) {
                 Text(
-                    text = "$count shift${if (count != 1) "s" else ""} · $percentage%",
+                    subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
+                    color = cs.onSurfaceVariant
                 )
             }
+        }
+        CircleIconButton(
+            icon = AppIcons.ChevronRight,
+            contentDescription = "Next",
+            onClick = onNext,
+            diameter = 44.dp,
+            iconSize = 19.dp,
+            container = cs.surfaceVariant,
+            tint = cs.onSurfaceVariant,
+            elevation = 0.dp
+        )
+    }
+}
 
-            Spacer(modifier = Modifier.height(10.dp))
+@Composable
+private fun SheetStat(label: String, value: String) {
+    val cs = MaterialTheme.colorScheme
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1)
+    }
+}
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(5.dp)
-                    .background(
-                        shiftColor.copy(alpha = 0.1f),
-                        RoundedCornerShape(3.dp)
-                    )
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(animatedFraction)
-                        .fillMaxHeight()
-                        .background(shiftColor, RoundedCornerShape(3.dp))
+@Composable
+private fun EntryRow(entry: ShiftBreakdownEntry, color: Color, currencySymbol: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .background(cs.background)
+            .border(1.dp, cs.outline, MaterialTheme.shapes.large)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.width(13.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                entry.date.format(entryDateFmt),
+                style = MaterialTheme.typography.titleSmall,
+                color = cs.onSurface, maxLines = 1
+            )
+            Text(
+                "${entry.startTime} — ${entry.endTime}",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant, maxLines = 1
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                StatsHelper.formatHours(entry.hours),
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface, maxLines = 1
+            )
+            if (entry.earnings > 0) {
+                Text(
+                    shortMoney(currencySymbol, entry.earnings),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant, maxLines = 1
                 )
             }
         }
     }
 }
 
-// ── Empty State ──
 @Composable
-private fun SlimEmptyStatsView(modifier: Modifier = Modifier) {
+private fun DayListSheet(
+    title: String,
+    subtitle: String,
+    dates: List<LocalDate>,
+    accentColor: Color,
+    icon: Painter,
+    emptyMessage: String
+) {
+    val cs = MaterialTheme.colorScheme
     Column(
-        modifier = modifier
+        Modifier
             .fillMaxWidth()
-            .padding(top = 48.dp, bottom = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .fillMaxHeight(0.82f)
+            .padding(horizontal = 22.dp)
+            .padding(bottom = 32.dp)
     ) {
-        Icon(
-            imageVector = Icons.Default.Info,
-            contentDescription = null,
-            modifier = Modifier.size(48.dp),
-            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "No shifts recorded",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Try selecting a different period",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f)
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).background(accentColor.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, null, tint = accentColor, modifier = Modifier.size(21.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        if (dates.isEmpty()) {
+            Text(
+                emptyMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 20.dp)
+            )
+        } else {
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .nestedScroll(SheetScrollLock),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(dates) { d ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.large)
+                            .background(cs.background)
+                            .border(1.dp, cs.outline, MaterialTheme.shapes.large)
+                            .padding(horizontal = 16.dp, vertical = 15.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(accentColor))
+                        Spacer(Modifier.width(13.dp))
+                        Text(
+                            d.format(fullDateFmt),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = cs.onSurface,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-@Preview(showBackground = true, name = "Stats Light Mode")
-@Composable
-fun StatsScreenPreview() {
-    ShiftVaultTheme(darkTheme = false) {
-        val mockShifts = mapOf(
-            LocalDate.now() to listOf(
-                Shift("Day Shift", "09:00", "17:00", 0xFF82B1FF, isHoliday = false),
-                Shift("Holiday", "00:00", "23:59", 0xFFE91E63, isHoliday = true)
-            )
-        )
-        StatsScreen(
-            savedShifts = mockShifts,
-            onBackClick = {},
-            currencyCode = "EUR"
-        )
+// ══════════════════════════════════════════════════════════════
+//  Data helpers
+// ══════════════════════════════════════════════════════════════
+
+private data class HourBucket(val label: String, val hours: Double)
+
+private enum class InsightIcon { CALENDAR, STAR, MONEY, CHART }
+
+private class Insight(
+    val iconKey: InsightIcon,
+    val label: String,
+    val value: String = "",
+    val money: Double = 0.0,
+    val isMoney: Boolean = false
+)
+
+/** Buckets worked hours for the overview bar chart. */
+private fun buildHourBuckets(
+    dailyHours: Map<LocalDate, Double>,
+    mode: StatsMode,
+    month: YearMonth,
+    year: java.time.Year,
+    start: LocalDate,
+    end: LocalDate
+): List<HourBucket> = when (mode) {
+
+    StatsMode.MONTHLY -> {
+        val weeks = ((month.lengthOfMonth() - 1) / 7) + 1
+        List(weeks) { w ->
+            var sum = 0.0
+            for (day in 1..month.lengthOfMonth()) {
+                if ((day - 1) / 7 == w) sum += dailyHours[month.atDay(day)] ?: 0.0
+            }
+            HourBucket("W${w + 1}", sum)
+        }
     }
+
+    StatsMode.YEARLY -> List(12) { m ->
+        val ym = YearMonth.of(year.value, m + 1)
+        var sum = 0.0
+        for (day in 1..ym.lengthOfMonth()) sum += dailyHours[ym.atDay(day)] ?: 0.0
+        HourBucket(ym.month.name.take(1), sum)
+    }
+
+    StatsMode.CUSTOM -> {
+        val span = (ChronoUnit.DAYS.between(start, end) + 1).toInt().coerceAtLeast(1)
+        if (span <= 10) {
+            List(span) { i ->
+                val d = start.plusDays(i.toLong())
+                HourBucket("${d.dayOfMonth}", dailyHours[d] ?: 0.0)
+            }
+        } else {
+            val weeks = ((span + 6) / 7).coerceAtMost(12)
+            List(weeks) { w ->
+                var sum = 0.0
+                for (d in 0 until 7) {
+                    val date = start.plusDays((w * 7 + d).toLong())
+                    if (!date.isAfter(end)) sum += dailyHours[date] ?: 0.0
+                }
+                HourBucket("W${w + 1}", sum)
+            }
+        }
+    }
+}
+
+private fun bucketSubtitle(mode: StatsMode, month: YearMonth, year: java.time.Year): String =
+    when (mode) {
+        StatsMode.MONTHLY ->
+            "Weekly distribution (${month.month.name.lowercase().replaceFirstChar { it.uppercase() }})"
+        StatsMode.YEARLY -> "Monthly distribution (${year.value})"
+        StatsMode.CUSTOM -> "Distribution across the range"
+    }
+
+/** Small, practical read-outs shown under the charts. */
+private fun buildInsights(
+    dailyHours: Map<LocalDate, Double>,
+    dailyEarnings: Map<LocalDate, Double>,
+    stats: MonthlyStats,
+    mode: StatsMode,
+    month: YearMonth
+): List<Insight> = buildList {
+
+    // Busiest weekday
+    if (dailyHours.isNotEmpty()) {
+        val byWeekday = dailyHours.entries
+            .groupBy { it.key.dayOfWeek }
+            .mapValues { (_, list) -> list.sumOf { it.value } }
+        val top = byWeekday.maxByOrNull { it.value }
+        if (top != null && top.value > 0) {
+            val dayName = top.key.name.lowercase().replaceFirstChar { it.uppercase() }
+            add(Insight(InsightIcon.CALENDAR, "Busiest day", "${dayName}s · ${StatsHelper.formatHours(top.value)}"))
+        }
+    }
+
+    // Longest streak of consecutive worked days
+    if (dailyHours.isNotEmpty()) {
+        val dates = dailyHours.keys.sorted()
+        var best = 1
+        var run = 1
+        for (i in 1 until dates.size) {
+            run = if (ChronoUnit.DAYS.between(dates[i - 1], dates[i]) == 1L) run + 1 else 1
+            if (run > best) best = run
+        }
+        add(Insight(InsightIcon.STAR, "Longest streak", "$best day${if (best != 1) "s" else ""} in a row"))
+    }
+
+    // Best paid day
+    val bestDay = dailyEarnings.maxByOrNull { it.value }
+    if (bestDay != null && bestDay.value > 0) {
+        add(Insight(InsightIcon.MONEY, "Best day (${bestDay.key.format(shortDateFmt)})", money = bestDay.value, isMoney = true))
+    }
+
+    // Month-end projection — only while looking at the running month
+    if (mode == StatsMode.MONTHLY && month == YearMonth.now() && stats.estimatedEarnings > 0) {
+        val today = LocalDate.now()
+        val elapsed = today.dayOfMonth
+        val total = month.lengthOfMonth()
+        if (elapsed in 1 until total) {
+            val projected = stats.estimatedEarnings / elapsed * total
+            add(Insight(InsightIcon.CHART, "Projected month end", money = projected, isMoney = true))
+        }
+    }
+}
+
+/**
+ * Insight rows need a Painter, which only resolves inside a @Composable, so the
+ * data layer stores an icon key and the row picks the Painter at draw time.
+ */
+
+/** Buckets daily earnings for the trend chart. Empty buckets stay as zeros. */
+private fun buildSeries(
+    daily: Map<LocalDate, Double>,
+    start: LocalDate,
+    spanDays: Int,
+    bucket: Bucket
+): List<Pair<LocalDate, Double>> {
+    val step = if (bucket == Bucket.DAY) 1 else 7
+    val count = ((spanDays + step - 1) / step).coerceAtMost(60)
+    if (count < 1) return emptyList()
+    return List(count) { i ->
+        val from = start.plusDays(i.toLong() * step)
+        var sum = 0.0
+        for (d in 0 until step) sum += daily[from.plusDays(d.toLong())] ?: 0.0
+        from to sum
+    }
+}
+
+/** Percentage change, or null when there's no baseline to compare against. */
+private fun pctDelta(current: Double, previous: Double): Double? =
+    if (previous <= 0.0) null else (current - previous) / previous * 100.0
+
+private fun deltaText(pct: Double?, suffix: String?): String {
+    if (pct == null) return "No baseline"
+    val sign = if (pct >= 0) "+" else ""
+    val body = "$sign${"%.1f".format(pct)}%"
+    return if (suffix == null) body else "$body $suffix"
+}
+
+private fun compactHours(hours: Double): String =
+    if (hours % 1.0 == 0.0) "${hours.toInt()}h" else "%.1fh".format(hours)
+
+/** Rounds up to a readable axis maximum: 1, 2, 2.5 or 5 times a power of ten. */
+private fun niceCeil(value: Double): Double {
+    if (value <= 0.0) return 100.0
+    val exponent = floor(log10(value))
+    val base = 10.0.pow(exponent)
+    val n = value / base
+    val m = when {
+        n <= 1.0 -> 1.0
+        n <= 2.0 -> 2.0
+        n <= 2.5 -> 2.5
+        n <= 5.0 -> 5.0
+        else -> 10.0
+    }
+    return m * base
+}
+
+private fun shortMoney(symbol: String, value: Double): String = when {
+    value >= 1_000_000 -> symbol + "%.1f".format(value / 1_000_000) + "M"
+    value >= 1_000 -> {
+        val k = value / 1_000
+        if (k == floor(k)) symbol + "%.0f".format(k) + "k" else symbol + "%.1f".format(k) + "k"
+    }
+    else -> symbol + "%.0f".format(value)
 }

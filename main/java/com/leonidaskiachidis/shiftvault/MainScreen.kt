@@ -1,1470 +1,1239 @@
 package com.leonidaskiachidis.shiftvault
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.leonidaskiachidis.shiftvault.ui.theme.AppTheme
 import com.leonidaskiachidis.shiftvault.ui.theme.ShiftVaultTheme
-import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.Alignment
-import java.time.YearMonth
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.text.PlatformTextStyle
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.AddToPhotos
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.EditCalendar
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
-import kotlin.compareTo
-import kotlin.text.get
-import kotlin.text.set
-import kotlin.text.toInt
-import kotlin.toString
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
+// Trimmed text metrics — keeps the tiny labels optically centred.
+private val flatTextStyle = TextStyle(
+    platformStyle = PlatformTextStyle(includeFontPadding = false),
+    lineHeightStyle = LineHeightStyle(
+        alignment = LineHeightStyle.Alignment.Center,
+        trim = LineHeightStyle.Trim.Both
+    )
+)
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+private val monthTitleFmt = DateTimeFormatter.ofPattern("MMMM")
+private val dayLabelFmt = DateTimeFormatter.ofPattern("EEEE, MMM d")
+
+/**
+ * Swallows every scroll and fling the sheet body doesn't use, so the sheet's own
+ * nested-scroll connection never sees leftover delta. The content scrolls to its
+ * end without dragging the sheet, and only the handle/header can dismiss it.
+ */
+internal val SheetScrollLock = object : NestedScrollConnection {
+    override fun onPostScroll(
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource
+    ): Offset = available
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity = available
+}
+
+private fun greetingFor(hour: Int): String = when {
+    hour < 12 -> "Good morning,"
+    hour < 18 -> "Good afternoon,"
+    else -> "Good evening,"
+}
+
+internal fun shiftTimeLabel(shift: Shift): String =
+    if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day"
+    else "${shift.startTime} — ${shift.endTime}"
+
+internal fun hoursLabel(hours: Double): String =
+    if (hours % 1.0 == 0.0) "${hours.toInt()}h" else String.format("%.1fh", hours)
+
+/** 42 consecutive days (6 rows) starting on the first visible weekday. */
+private fun buildMonthCells(month: YearMonth, startOfWeek: String): List<LocalDate> {
+    val first = month.atDay(1)
+    val skip = if (startOfWeek == "Sunday") first.dayOfWeek.value % 7
+    else first.dayOfWeek.value - 1
+    val gridStart = first.minusDays(skip.toLong())
+    return List(42) { gridStart.plusDays(it.toLong()) }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Screen
+// ══════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     onSettingsClick: () -> Unit,
-    onCreateCustomClick: (java.time.LocalDate) -> Unit,
+    onCreateCustomClick: (LocalDate) -> Unit,
+    startOfWeek: String = "Monday",
+    currencyCode: String = "EUR",
+    userName: String = "",
+    /**
+     * Saved shifts for the active profile only — this screen just lists them,
+     * so there is no index to keep in step with the full library.
+     */
+    customTemplates: List<Shift> = emptyList(),
+    /**
+     * The *whole* calendar, every profile included. The grid shows only the
+     * active profile's shifts, but writes have to carry the rest through
+     * untouched or switching jobs would erase the others.
+     */
+    shifts: Map<LocalDate, List<Shift>> = emptyMap(),
+    /** The app-wide selection. Every shift this screen writes is filed under it. */
+    activeProfile: JobProfile = JobProfile.Default,
+    onOpenProfiles: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val shiftManager = remember { ShiftManager(context) }
 
-    // --- STATE ---
+    val currencySymbol = remember(currencyCode) {
+        try { java.util.Currency.getInstance(currencyCode).getSymbol(java.util.Locale.getDefault()) }
+        catch (_: Exception) { currencyCode }
+    }
+
+    // Page `startPage` is the month the pager was opened on. Both the page →
+    // month mapping and "Jump to today" read this one anchor, so they can't
+    // disagree after the month rolls over while the app is open.
     val startPage = Int.MAX_VALUE / 2
+    val anchorMonth = remember { YearMonth.now() }
     val pagerState = rememberPagerState(initialPage = startPage, pageCount = { Int.MAX_VALUE })
-
     val currentMonth by remember {
-        derivedStateOf {
-            val offset = pagerState.currentPage - startPage
-            YearMonth.now().plusMonths(offset.toLong())
+        derivedStateOf { anchorMonth.plusMonths((pagerState.currentPage - startPage).toLong()) }
+    }
+
+    // Mirrors `shifts`, but can run ahead of it: tapping days in paste or eraser
+    // mode has to repaint on the next frame, not after DataStore has written and
+    // re-decoded the whole map. Holds every profile's shifts — see the param docs.
+    var savedShifts by remember { mutableStateOf(shifts) }
+
+    // Writes still on their way to DataStore. While any are in flight, a value
+    // arriving from storage is older than what is on screen, so adopting it
+    // would briefly undo the later taps.
+    var pendingWrites by remember { mutableIntStateOf(0) }
+    val settled = pendingWrites == 0
+
+    // Keyed on `settled` as well, so a stored value that arrived while writes
+    // were still pending is adopted the moment the last one completes.
+    LaunchedEffect(shifts, settled) { if (settled) savedShifts = shifts }
+
+    /**
+     * The single path every edit on this screen takes. [transform] is applied
+     * to the on-screen map at once, and then again inside ShiftManager to
+     * whatever is actually stored, so overlapping taps each land on the latest
+     * data instead of overwriting one another.
+     */
+    val applyUpdate: (transform: (Map<LocalDate, List<Shift>>) -> Map<LocalDate, List<Shift>>) -> Unit =
+        { transform ->
+            savedShifts = transform(savedShifts)
+            pendingWrites++
+            scope.launch {
+                try {
+                    shiftManager.updateShifts(transform)
+                } finally {
+                    pendingWrites--
+                }
+            }
         }
+
+    val activeProfileId = activeProfile.id
+
+    // What the grid actually draws: the active job's shifts, nothing else.
+    val visibleShifts = remember(savedShifts, activeProfileId) {
+        ProfileScope.shifts(savedShifts, activeProfileId)
     }
 
-    var showAddSheet by remember { mutableStateOf(false) }
-    var showEditSheet by remember { mutableStateOf(false) }
-    var selectedDate by remember { mutableStateOf<java.time.LocalDate?>(null) }
+    // Saveable, so a rotation or the system flipping to dark mode doesn't
+    // close whatever the user had open.
+    var showAddSheet by rememberSaveable { mutableStateOf(false) }
+    var showDaySheet by rememberSaveable { mutableStateOf(false) }
+    var showQuickSheet by rememberSaveable { mutableStateOf(false) }
+    var showPickToPasteSheet by rememberSaveable { mutableStateOf(false) }
+    var selectedDate by rememberSaveable { mutableStateOf<LocalDate?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var savedShifts by remember { mutableStateOf(mapOf<java.time.LocalDate, List<Shift>>()) }
-    var showEditDialog by remember { mutableStateOf(false) }
-    var editingShiftIndex by remember { mutableStateOf(-1) }
-    var tempEditingShift by remember { mutableStateOf<Shift?>(null) }
-    var showTimePicker by remember { mutableStateOf(false) }
-    var pickingStartTime by remember { mutableStateOf(true) }
 
-    var clipboardShift by remember { mutableStateOf<Shift?>(null) }
+    // Edit dialog state
+    var editingShift by rememberSaveable(stateSaver = jsonSaver<Shift?>()) { mutableStateOf(null) }
+    var editingIndex by rememberSaveable { mutableIntStateOf(-1) }
+
+    // Bulk modes
+    var clipboardShift by rememberSaveable(stateSaver = jsonSaver<Shift?>()) { mutableStateOf(null) }
+    var isEraserMode by rememberSaveable { mutableStateOf(false) }
     val isPasteMode by remember { derivedStateOf { clipboardShift != null } }
-    var isEraserMode by remember { mutableStateOf(false) }
+    val isActiveMode = isPasteMode || isEraserMode
 
-    var customTemplates by remember { mutableStateOf(listOf<Shift>()) }
-    var lastAddedDate by remember { mutableStateOf<java.time.LocalDate?>(null) }
-    var animationTrigger by remember { mutableStateOf(0) }
-    var showQuickActionsSheet by remember { mutableStateOf(false) }
-    var showShiftSelectionSheet by remember { mutableStateOf(false) }
+    val now by rememberNow()
+    val today = now.toLocalDate()
 
+    val cs = MaterialTheme.colorScheme
+    val accents = AppTheme.accents
 
-    LaunchedEffect(Unit) {
-        launch { shiftManager.getShifts.collect { savedShifts = it } }
-        launch { shiftManager.getTemplates.collect { customTemplates = it } }
+    val greeting = greetingFor(now.hour)
+
+    val weekDays = remember(startOfWeek) {
+        if (startOfWeek == "Sunday") listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+        else listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
     }
 
-    val currentMonthStats = remember(savedShifts, currentMonth) {
-        StatsHelper.calculateMonthlyStats(savedShifts, currentMonth)
-    }
-
-    val today = remember { java.time.LocalDate.now() }
-
-    // --- UI ---
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(cs.background)
+            .statusBarsPadding()
     ) {
-        Column(
+        // ── Header ──
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .fillMaxWidth()
+                .padding(horizontal = AppSpace.screenH)
+                .padding(top = 10.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // --- TOP ACTION BAR ---
-            AnimatedVisibility(
-                visible = isPasteMode || isEraserMode,
-                enter = expandVertically(animationSpec = tween(300)) + fadeIn(),
-                exit = shrinkVertically(animationSpec = tween(300)) + fadeOut()
+            Column(modifier = Modifier.weight(1f)) {
+                // The date used to sit here. The job you are logging against is
+                // the more load-bearing fact once there is more than one of
+                // them — and today's date is a tap away in the month bar below.
+                ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = greeting,
+                    style = MaterialTheme.typography.displayMedium,
+                    color = cs.onBackground
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            // The month bar shows the month alone now; the year lives here, as a
+            // quiet pill. It tracks the month you are *browsing*, not today, so
+            // paging into another year is never ambiguous. Reading the pager
+            // state inside the pill keeps the rest of the header off the
+            // recomposition path.
+            YearPill(year = { currentMonth.year })
+            Spacer(Modifier.width(10.dp))
+            CircleIconButton(
+                icon = AppIcons.EditCalendar,
+                contentDescription = "Quick actions",
+                onClick = { showQuickSheet = true }
+            )
+        }
+
+        // ── Active-mode banner (paste / erase) ──
+        //
+        // The text and tint are latched while the banner is up: leaving the mode
+        // clears the very state the banner describes, so without this it would
+        // flip to the other mode's wording for the length of the exit.
+        var bannerContent by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+        if (isActiveMode) {
+            val next = isEraserMode to
+                    if (isEraserMode) "Tap a day to clear it"
+                    else "Tap days to add \"${clipboardShift?.name ?: ""}\""
+            if (bannerContent != next) bannerContent = next
+        }
+
+        AnimatedVisibility(
+            visible = isActiveMode,
+            enter = expandVertically(animationSpec = tween(160)) + fadeIn(tween(160)),
+            exit = shrinkVertically(animationSpec = tween(140)) + fadeOut(tween(100))
+        ) {
+            val (eraser, message) = bannerContent ?: (false to "")
+            val accent = if (eraser) accents.negative else cs.primary
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppSpace.screenH)
+                    .padding(bottom = 6.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.12f))
+                    .padding(horizontal = 16.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                val barColor = if (isEraserMode) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary
-                val barText = if (isEraserMode) "Eraser Mode — Tap to clear" else "Paste: ${clipboardShift?.name ?: ""}"
-
-
-                Surface(
+                Icon(
+                    if (eraser) AppIcons.Delete else AppIcons.ContentCopy,
+                    contentDescription = null, tint = accent, modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelMedium, color = accent,
+                    modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Icon(
+                    AppIcons.Close, contentDescription = "Done", tint = accent,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    color = barColor.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, barColor.copy(alpha = 0.4f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Icon(
-                                imageVector = if (isEraserMode) Icons.Default.Delete else Icons.Default.Check,
-                                contentDescription = null,
-                                tint = barColor,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = barText,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = barColor
-                            )
-                        }
-                        Surface(
-                            onClick = {
-                                clipboardShift = null
-                                isEraserMode = false
-                            },
-                            shape = CircleShape,
-                            color = barColor.copy(alpha = 0.15f),
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Icon(Icons.Default.Close, contentDescription = "Cancel", tint = barColor, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                    }
-                }
+                        .size(18.dp)
+                        .clickable { clipboardShift = null; isEraserMode = false }
+                )
             }
+        }
 
-            // --- STATS RIBBON ---
-            Surface(
+        // ── Month bar ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpace.screenH)
+                .padding(bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircleIconButton(
+                icon = AppIcons.ChevronLeft,
+                contentDescription = "Previous month",
+                onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                diameter = 44.dp,
+                iconSize = 19.dp,
+                container = cs.surfaceVariant,
+                tint = cs.onSurfaceVariant,
+                elevation = 0.dp
+            )
+            MonthTitle(
+                month = { currentMonth },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+            )
+            CircleIconButton(
+                icon = AppIcons.ChevronRight,
+                contentDescription = "Next month",
+                onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
+                diameter = 44.dp,
+                iconSize = 19.dp,
+                container = cs.surfaceVariant,
+                tint = cs.onSurfaceVariant,
+                elevation = 0.dp
+            )
+        }
+
+        // ── Weekday strip ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpace.screenH)
+                .padding(bottom = 8.dp)
+        ) {
+            weekDays.forEach { label ->
+                val weekend = label == "SAT" || label == "SUN"
+                Text(
+                    label, modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (weekend) cs.onSurface else cs.onSurfaceVariant
+                )
+            }
+        }
+
+        // ── Month grid ──
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = AppSpace.screenH)
+                .padding(bottom = 16.dp),
+            key = { it },
+            // Without this the two grids butt straight into each other mid-swipe
+            // and read as one continuous sheet.
+            pageSpacing = 14.dp,
+            beyondViewportPageCount = 1
+        ) { page ->
+            val monthForPage = remember(page) { anchorMonth.plusMonths((page - startPage).toLong()) }
+            val cells = remember(monthForPage, startOfWeek) { buildMonthCells(monthForPage, startOfWeek) }
+            val weeks = remember(cells) { cells.chunked(7) }
+
+            // Hoisted once per page — shared by all 42 cells.
+            val gridLine = cs.outline
+            val weekendWash = accents.weekendWash
+            val isDark = accents.isDark
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(MaterialTheme.shapes.large)
+                    .background(cs.surface)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RibbonStat(
-                        value = StatsHelper.formatHours(currentMonthStats.totalHours),
-                        label = "Hours",
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    VerticalDivider(
-                            modifier = Modifier.height(28.dp),
-                    thickness = 1.dp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                    )
-                    RibbonStat(
-                        value = currentMonthStats.totalShifts.toString(),
-                        label = "Shifts",
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
-                    VerticalDivider(
-                        modifier = Modifier.height(28.dp),
-                        thickness = 1.dp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                    )
-                    // Quick Actions Icon Button
-                    FilledIconButton(
-                        onClick = { showQuickActionsSheet = true },
-                        modifier = Modifier.size(40.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.EditCalendar,
-                            contentDescription = "Quick Actions",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
-
-
-            // --- MONTH SELECTOR ---
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 14.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp, horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilledIconButton(
-                        onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
-                        modifier = Modifier.size(36.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                        )
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "Previous",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = currentMonth.month.name.lowercase()
-                                .replaceFirstChar { it.uppercase() },
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            letterSpacing = 0.5.sp
-                        )
-                        Text(
-                            text = currentMonth.year.toString(),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
-
-                    FilledIconButton(
-                        onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
-                        modifier = Modifier.size(36.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                        )
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Next",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                }
-            }
-
-            // --- WEEKDAY HEADER ---
-            val days = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(7),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 6.dp),
-                userScrollEnabled = false
-            ) {
-                items(days.size) { index ->
-                    Text(
-                        text = days[index],
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-
-            // --- CALENDAR PAGER ---
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                key = { it }
-            ) { page ->
-                val monthForPage = remember(page) {
-                    YearMonth.now().plusMonths((page - startPage).toLong())
-                }
-                val daysToSkip = remember(monthForPage) {
-                    monthForPage.atDay(1).dayOfWeek.value - 1
-                }
-                val lengthOfMonth = remember(monthForPage) { monthForPage.lengthOfMonth() }
-
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(7),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                    modifier = Modifier.fillMaxSize(),
-                    userScrollEnabled = true
-                ) {
-                    items(daysToSkip, key = { "skip_$it" }) {
-                        Spacer(modifier = Modifier.aspectRatio(0.72f))
-                    }
-
-                    items(lengthOfMonth, key = { "day_${monthForPage}_$it" }) { index ->
-                        val dayNumber = index + 1
-                        val dateOfCell = remember(monthForPage, dayNumber) { monthForPage.atDay(dayNumber) }
-                        val dayShifts = savedShifts[dateOfCell] ?: emptyList()
-                        val isAnimatingAdd = lastAddedDate == dateOfCell
-                        val isToday = dateOfCell == today
-                        val isWeekend = remember(dateOfCell) {
-                            dateOfCell.dayOfWeek.value >= 6 // Saturday=6, Sunday=7
-                        }
-
-                        RedesignedCalendarDayCell(
-                            dayNumber = dayNumber,
-                            dayShifts = dayShifts,
-                            isToday = isToday,
-                            isAnimatingAdd = isAnimatingAdd,
-                            isPasteMode = isPasteMode,
-                            isEraserMode = isEraserMode,
-                            isWeekend = isWeekend,
-                            onClick = {
-                                when {
-                                    isEraserMode -> {
-                                        val newMap = savedShifts - dateOfCell
-                                        savedShifts = newMap
-                                        scope.launch { shiftManager.saveShifts(newMap) }
-                                    }
-                                    isPasteMode && clipboardShift != null -> {
-                                        val updated = (savedShifts[dateOfCell] ?: emptyList()) + clipboardShift!!
-                                        val newMap = savedShifts + (dateOfCell to updated)
-                                        savedShifts = newMap
-                                        lastAddedDate = dateOfCell
-                                        scope.launch { shiftManager.saveShifts(newMap) }
-                                    }
-                                    else -> {
-                                        selectedDate = dateOfCell
-                                        if (dayShifts.isNotEmpty()) showEditSheet = true else showAddSheet = true
+                weeks.forEachIndexed { rowIndex, week ->
+                    Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                        week.forEachIndexed { colIndex, date ->
+                            DayCell(
+                                date = date,
+                                inMonth = YearMonth.from(date) == monthForPage,
+                                isToday = date == today,
+                                dayShifts = visibleShifts[date] ?: emptyList(),
+                                gridLine = gridLine,
+                                weekendWash = weekendWash,
+                                isDark = isDark,
+                                drawTopRule = rowIndex > 0,
+                                drawStartRule = colIndex > 0,
+                                cs = cs,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    val pasted = clipboardShift
+                                    when {
+                                        isEraserMode -> applyUpdate { map ->
+                                            ProfileScope.withDaySlice(map, date, activeProfileId, emptyList())
+                                        }
+                                        pasted != null -> applyUpdate { map ->
+                                            val updated = ProfileScope.daySlice(map, date, activeProfileId) +
+                                                    pasted.copy(jobId = activeProfileId)
+                                            ProfileScope.withDaySlice(map, date, activeProfileId, updated)
+                                        }
+                                        else -> {
+                                            selectedDate = date
+                                            if ((visibleShifts[date] ?: emptyList()).isNotEmpty()) showDaySheet = true
+                                            else showAddSheet = true
+                                        }
                                     }
                                 }
-                            },
-                            onAnimationFinished = { lastAddedDate = null }
-                        )
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
-    // --- ADD BOTTOM SHEET ---
+    // ─────────────────────────── Sheets & dialogs ───────────────────────────
+
     if (showAddSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showAddSheet = false },
+        AppSheet(
+            onDismiss = { showAddSheet = false },
             sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            dragHandle = {
-                Surface(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                ) {
-                    Spacer(modifier = Modifier.size(width = 40.dp, height = 4.dp))
-                }
-            }
+            title = "Add a shift",
+            caption = selectedDate?.format(dayLabelFmt)
         ) {
+            Spacer(Modifier.height(18.dp))
+
+            if (customTemplates.isNotEmpty()) {
+                SheetLabel("Saved shifts")
+                Spacer(Modifier.height(10.dp))
+            }
+
+            // "New shift" is the last row of the list rather than a fixed
+            // header: it is one more thing you can pick here, and it scrolls
+            // with the rest instead of pinning the top of the sheet.
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 32.dp)
+                Modifier
+                    .heightIn(max = 400.dp)
+                    .nestedScroll(SheetScrollLock)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                selectedDate?.let { date ->
-                    val formatter = remember { java.time.format.DateTimeFormatter.ofPattern("EEEE, MMM d") }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 20.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = date.format(formatter),
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Choose a shift to add",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                            )
-                        }
-                    }
+                if (customTemplates.isEmpty()) {
+                    EmptyHint("No saved shifts yet — create one to reuse it later.")
                 }
 
-                val onAddShift: (Shift) -> Unit = { shift ->
-                    scope.launch {
-                        selectedDate?.let { date ->
-                            val updated = (savedShifts[date] ?: emptyList()) + shift
-                            val newMap = savedShifts + (date to updated)
-                            lastAddedDate = date
-                            animationTrigger++
-                            savedShifts = newMap
-                            shiftManager.saveShifts(newMap)
-                        }
-                        sheetState.hide()
-                        showAddSheet = false
-                    }
-                }
-
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // Templates Section
-                    item(span = { GridItemSpan(2) }) {
-                        SheetSectionLabel("YOUR TEMPLATES")
-                    }
-
-                    item {
-                        CreateNewCard(onClick = {
-                            scope.launch {
-                                sheetState.hide()
-                                showAddSheet = false
-                                selectedDate?.let { onCreateCustomClick(it) }
-                            }
-                        })
-                    }
-
-                    items(customTemplates.size, key = { "tmpl_$it" }) { index ->
-                        val shift = customTemplates[index]
-                        RedesignedShiftCard(
-                            shift = shift,
-                            onClick = { onAddShift(shift) },
-                            onLongClick = {
-                                clipboardShift = shift
-                                scope.launch {
-                                    sheetState.hide()
-                                    showAddSheet = false
+                customTemplates.forEach { entry ->
+                    ShiftPickRow(entry) {
+                        scope.launch {
+                            sheetState.hide(); showAddSheet = false
+                            selectedDate?.let { date ->
+                                applyUpdate { map ->
+                                    val updated = ProfileScope.daySlice(map, date, activeProfileId) +
+                                            entry.copy(jobId = activeProfileId)
+                                    ProfileScope.withDaySlice(map, date, activeProfileId, updated)
                                 }
                             }
-                        )
+                        }
                     }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+
+                NewShiftRow {
+                    scope.launch {
+                        sheetState.hide(); showAddSheet = false
+                        selectedDate?.let(onCreateCustomClick)
+                    }
+                }
             }
         }
     }
 
-    // --- EDIT BOTTOM SHEET ---
-    if (showEditSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showEditSheet = false },
+    if (showDaySheet) {
+        val date = selectedDate ?: today
+        val dayShifts = visibleShifts[date] ?: emptyList()
+        AppSheet(
+            onDismiss = { showDaySheet = false },
             sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            dragHandle = {
-                Surface(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                ) {
-                    Spacer(modifier = Modifier.size(width = 40.dp, height = 4.dp))
-                }
-            }
+            title = "${dayShifts.size} shift${if (dayShifts.size != 1) "s" else ""}",
+            caption = date.format(dayLabelFmt)
         ) {
+            Spacer(Modifier.height(18.dp))
+
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 32.dp)
+                Modifier
+                    .heightIn(max = 400.dp)
+                    .nestedScroll(SheetScrollLock)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                val date = selectedDate ?: java.time.LocalDate.now()
-                val dayShifts = savedShifts[date] ?: emptyList()
-                val formatter = remember { java.time.format.DateTimeFormatter.ofPattern("EEEE, MMM d") }
-
-                Text(
-                    text = date.format(formatter),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "${dayShifts.size} shift${if (dayShifts.size != 1) "s" else ""} scheduled",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-
                 dayShifts.forEachIndexed { index, shift ->
-                    val shiftColor = Color(shift.colorValue.toInt())
-                    val timeDisplay = if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day" else "${shift.startTime} — ${shift.endTime}"
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        color = shiftColor.copy(alpha = 0.08f),
-                        border = BorderStroke(1.dp, shiftColor.copy(alpha = 0.25f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Color bar
-                            Box(
-                                modifier = Modifier
-                                    .width(4.dp)
-                                    .height(36.dp)
-                                    .background(shiftColor, RoundedCornerShape(2.dp))
-                            )
-                            Spacer(modifier = Modifier.width(14.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = shift.name,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onBackground
-                                )
-                                Text(
-                                    text = timeDisplay,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Surface(
-                                onClick = {
-                                    editingShiftIndex = index
-                                    tempEditingShift = shift.copy()  // Create a safe copy
-                                    showEditDialog = true
-                                },
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                    Icon(
-                                        imageVector = Icons.Default.Visibility,
-                                        contentDescription = "View",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Surface(
-                                onClick = {
-                                    scope.launch {
-                                        val updated = dayShifts.toMutableList().apply { removeAt(index) }
-                                        val newMap = if (updated.isEmpty()) savedShifts - date else savedShifts + (date to updated)
-                                        if (updated.isEmpty()) { sheetState.hide(); showEditSheet = false }
-                                        savedShifts = newMap
-                                        shiftManager.saveShifts(newMap)
-                                    }
-                                },
-                                shape = CircleShape,
-                                color = Color(0xFFD32F2F).copy(alpha = 0.1f),
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFD32F2F), modifier = Modifier.size(16.dp))
+                    DayShiftRow(
+                        shift = shift,
+                        onEdit = { editingIndex = index; editingShift = shift.copy() },
+                        onDelete = {
+                            scope.launch {
+                                if (dayShifts.size == 1) { sheetState.hide(); showDaySheet = false }
+                                applyUpdate { map ->
+                                    val slice = ProfileScope.daySlice(map, date, activeProfileId)
+                                    val updated = if (index in slice.indices)
+                                        slice.toMutableList().also { it.removeAt(index) }
+                                    else slice
+                                    ProfileScope.withDaySlice(map, date, activeProfileId, updated)
                                 }
                             }
                         }
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            SheetActionButton(
+                text = "Add another shift",
+                icon = AppIcons.Add
+            ) {
+                scope.launch {
+                    sheetState.hide()      // slides the day sheet down
+                    showDaySheet = false
+                    showAddSheet = true    // the add sheet slides up from Hidden
+                }
+            }
+        }
+    }
+
+    if (showQuickSheet) {
+        AppSheet(
+            onDismiss = { showQuickSheet = false },
+            sheetState = sheetState,
+            title = "Quick actions"
+        ) {
+            Spacer(Modifier.height(18.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                QuickAction(
+                    AppIcons.Today, "Jump to today",
+                    "Go back to the current month", cs.primary
+                ) {
+                    scope.launch {
+                        sheetState.hide(); showQuickSheet = false
+                        val monthsAway = ChronoUnit.MONTHS.between(anchorMonth, YearMonth.from(today))
+                        pagerState.animateScrollToPage(startPage + monthsAway.toInt())
+                    }
+                }
+                QuickAction(
+                    AppIcons.ContentCopy, "Copy a shift",
+                    "Tap days to add it to each one", cs.primary
+                ) { scope.launch { sheetState.hide(); showQuickSheet = false; showPickToPasteSheet = true } }
+                QuickAction(
+                    AppIcons.Delete, "Erase days",
+                    "Tap days to clear their shifts", accents.negative
+                ) { scope.launch { sheetState.hide(); showQuickSheet = false; isEraserMode = true } }
+            }
+        }
+    }
+
+    if (showPickToPasteSheet) {
+        AppSheet(
+            onDismiss = { showPickToPasteSheet = false },
+            sheetState = sheetState,
+            title = "Which shift?",
+            caption = "Pick one, then tap the days you want it on"
+        ) {
+            Spacer(Modifier.height(18.dp))
+            if (customTemplates.isEmpty()) {
+                EmptyHint("No saved shifts yet.")
+            } else {
+                Column(
+                    Modifier
+                        .heightIn(max = 400.dp)
+                        .nestedScroll(SheetScrollLock)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    customTemplates.forEach { shift ->
+                        ShiftPickRow(shift) {
+                            scope.launch {
+                                sheetState.hide(); showPickToPasteSheet = false
+                                clipboardShift = shift
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
 
-                Spacer(modifier = Modifier.height(16.dp))
+    editingShift?.let { shift ->
+        ShiftEditDialog(
+            shift = shift,
+            currencySymbol = currencySymbol,
+            cs = cs,
+            onDismiss = { editingShift = null },
+            onSave = { updated ->
+                val date = selectedDate
+                val index = editingIndex
+                if (date != null) {
+                    applyUpdate { map ->
+                        val list = ProfileScope.daySlice(map, date, activeProfileId).toMutableList()
+                        if (index in list.indices) {
+                            list[index] = updated.copy(jobId = activeProfileId)
+                            ProfileScope.withDaySlice(map, date, activeProfileId, list)
+                        } else map
+                    }
+                }
+                editingShift = null
+            }
+        )
+    }
+}
 
+// ══════════════════════════════════════════════════════════════
+//  Month bar pieces
+//
+//  Both take the value as a lambda rather than a plain argument: the pager
+//  state is then read inside these composables, so a swipe repaints the title
+//  and the year and leaves the rest of the header alone.
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun YearPill(year: () -> Int) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        Modifier
+            .clip(CircleShape)
+            .background(cs.surfaceVariant)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Text(
+            year().toString(),
+            style = MaterialTheme.typography.labelLarge,
+            color = cs.onSurface,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun MonthTitle(month: () -> YearMonth, modifier: Modifier = Modifier) {
+    Text(
+        text = month().format(monthTitleFmt),
+        modifier = modifier,
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground,
+        maxLines = 1, overflow = TextOverflow.Ellipsis
+    )
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Calendar cell
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun DayCell(
+    date: LocalDate,
+    inMonth: Boolean,
+    isToday: Boolean,
+    dayShifts: List<Shift>,
+    gridLine: Color,
+    weekendWash: Color,
+    isDark: Boolean,
+    drawTopRule: Boolean,
+    drawStartRule: Boolean,
+    cs: ColorScheme,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    // Saturday and Sunday always, whatever the week starts on.
+    val isWeekend = remember(date) {
+        date.dayOfWeek == java.time.DayOfWeek.SATURDAY ||
+                date.dayOfWeek == java.time.DayOfWeek.SUNDAY
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .drawBehind {
+                if (isWeekend) drawRect(weekendWash)
+                if (drawTopRule) {
+                    drawLine(gridLine, Offset(0f, 0f), Offset(size.width, 0f), 1f)
+                }
+                if (drawStartRule) {
+                    drawLine(gridLine, Offset(0f, 0f), Offset(0f, size.height), 1f)
+                }
+            }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 3.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+            if (isToday) {
                 Box(
-                    modifier = Modifier.fillMaxWidth(),
+                    Modifier
+                        .size(24.dp)
+                        .background(cs.primary.copy(alpha = 0.22f), CircleShape)
+                )
+                Box(
+                    Modifier.size(22.dp).background(cs.primary, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Button(
-                        onClick = { showEditSheet = false; showAddSheet = true },
-                        modifier = Modifier
-                            .width(220.dp)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                            contentColor = MaterialTheme.colorScheme.primary
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(0.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Add Another Shift", fontWeight = FontWeight.SemiBold)
-                    }
+                    Text(
+                        "${date.dayOfMonth}", color = cs.onPrimary, fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold, style = flatTextStyle
+                    )
                 }
+            } else {
+                Text(
+                    "${date.dayOfMonth}",
+                    color = if (inMonth) cs.onSurface else cs.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                    fontWeight = if (inMonth) FontWeight.ExtraBold else FontWeight.Medium,
+                    style = flatTextStyle
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
 
-
-
+        val shown = if (dayShifts.size > 2) dayShifts.subList(0, 2) else dayShifts
+        shown.forEach { shift ->
+            // Any colour can land here now that the form has a free picker, so
+            // the stored value is normalised for this theme before it is drawn.
+            val base = remember(shift.colorValue) { Color(shift.colorValue.toInt()) }
+            val mark = remember(base, isDark) { ShiftColors.accent(base, isDark) }
+            val ink = remember(base, isDark) { ShiftColors.ink(base, isDark) }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 3.dp)
+                    .height(16.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(mark.copy(alpha = if (inMonth) 0.28f else 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    shift.name,
+                    color = ink.copy(alpha = if (inMonth) 1f else 0.6f),
+                    fontSize = 9.sp, fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = flatTextStyle,
+                    modifier = Modifier.padding(horizontal = 3.dp)
+                )
+            }
+        }
+        if (dayShifts.size > 2) {
+            Text(
+                "+${dayShifts.size - 2}",
+                color = cs.onSurfaceVariant,
+                fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, style = flatTextStyle
+            )
         }
     }
+}
 
+// ══════════════════════════════════════════════════════════════
+//  Sheet shell & text
+// ══════════════════════════════════════════════════════════════
 
-        // --- DETAIL VIEW DIALOG ---
-    // Replace the existing "DETAIL VIEW DIALOG" section with this:
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AppSheet(
+    onDismiss: () -> Unit,
+    sheetState: SheetState,
+    title: String,
+    caption: String? = null,
+    body: @Composable ColumnScope.() -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = cs.surface,
+        contentColor = cs.onSurface,
+        shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+        dragHandle = { SheetHandle() }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp)
+                .padding(bottom = 36.dp)
+        ) {
+            // ── Draggable region: handle + title + date ──
+            SheetTitle(title)
+            if (caption != null) SheetCaption(caption)
 
-    if (showEditDialog && tempEditingShift != null) {
+            // ── Everything below swallows vertical drags, so it can't move the sheet ──
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures { _, _ -> /* consumed on purpose */ }
+                    },
+                content = body
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetHandle() {
+    val cs = MaterialTheme.colorScheme
+    Box(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(cs.outline))
+    }
+}
+
+@Composable
+private fun SheetTitle(text: String) =
+    Text(
+        text,
+        style = MaterialTheme.typography.displayMedium,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+
+@Composable
+private fun SheetCaption(text: String) =
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 5.dp)
+    )
+
+@Composable
+internal fun EmptyHint(text: String) =
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(vertical = 6.dp)
+    )
+
+@Composable
+internal fun SheetActionButton(text: String, icon: Painter, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = CircleShape,
+        color = cs.primaryContainer,
+        contentColor = cs.onPrimaryContainer,
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            Modifier.padding(vertical = 16.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, null, Modifier.size(18.dp), tint = cs.primary)
+            Spacer(Modifier.width(9.dp))
+            Text(text, style = MaterialTheme.typography.labelLarge, color = cs.primary)
+        }
+    }
+}
+
+@Composable
+internal fun SheetLabel(text: String) =
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+@Composable
+private fun ShiftPickRow(shift: Shift, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val color = rememberShiftAccent(shift.colorValue)
+    val hours = remember(shift) { PayEngine.payableHours(shift) }
+    val secondary = remember(shift) {
+        val base = when (shift.dayType) {
+            DayType.WORKED -> shiftTimeLabel(shift)
+            DayType.PAID_LEAVE -> "Paid leave"
+            DayType.UNPAID_LEAVE -> "Unpaid leave"
+        }
+        if (shift.location.isBlank()) base else "$base · ${shift.location}"
+    }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(color.copy(alpha = 0.14f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(11.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.width(13.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                shift.name,
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                secondary,
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                hoursLabel(hours),
+                style = MaterialTheme.typography.labelMedium,
+                color = cs.onSurfaceVariant
+            )
+            if (shift.payMultiplier != 1.0 && shift.dayType == DayType.WORKED) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "×" + "%.2f".format(shift.payMultiplier).trimEnd('0').trimEnd('.'),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.primary
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Sits at the end of the saved-shift list and is built to the same measurements
+ * as [ShiftPickRow] — same corner, same padding, same leading mark — so it
+ * belongs to the list. Only the tint sets it apart, which is what marks it as
+ * the action rather than one of the saved shifts.
+ */
+@Composable
+private fun NewShiftRow(onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(cs.primaryContainer)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(cs.primary.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(AppIcons.Add, null, tint = cs.primary, modifier = Modifier.size(15.dp))
+        }
+        Spacer(Modifier.width(13.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "New shift",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.primary
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Create one and reuse it later",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.primary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Icon(
+            AppIcons.ChevronRight, null,
+            tint = cs.primary, modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+@Composable
+private fun DayShiftRow(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val accents = AppTheme.accents
+    val color = rememberShiftAccent(shift.colorValue)
+    val hours = remember(shift) { PayEngine.payableHours(shift) }
+    val detail = remember(shift) {
+        val base = when (shift.dayType) {
+            DayType.WORKED -> "${shiftTimeLabel(shift)} · ${hoursLabel(PayEngine.payableHours(shift))}"
+            DayType.PAID_LEAVE -> "Paid leave · ${hoursLabel(PayEngine.payableHours(shift))}"
+            DayType.UNPAID_LEAVE -> "Unpaid leave"
+        }
+        val withMultiplier =
+            if (shift.payMultiplier != 1.0 && shift.dayType == DayType.WORKED)
+                "$base · ×" + "%.2f".format(shift.payMultiplier).trimEnd('0').trimEnd('.')
+            else base
+        if (shift.location.isBlank()) withMultiplier else "$withMultiplier · ${shift.location}"
+    }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .background(cs.background)
+            .border(1.dp, cs.outline, MaterialTheme.shapes.large)
+            .padding(start = 14.dp, end = 12.dp, top = 14.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(11.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.width(13.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                shift.name,
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        }
+        RowActionButton(AppIcons.Edit, "Edit", cs.surfaceVariant, cs.onSurfaceVariant, onEdit)
+        Spacer(Modifier.width(8.dp))
+        RowActionButton(
+            AppIcons.Delete, "Delete",
+            accents.negative.copy(alpha = 0.12f), accents.negative, onDelete
+        )
+    }
+}
+
+@Composable
+private fun RowActionButton(
+    icon: Painter,
+    desc: String,
+    container: Color,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(container)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { Icon(icon, desc, tint = tint, modifier = Modifier.size(18.dp)) }
+}
+
+@Composable
+private fun QuickAction(
+    icon: Painter,
+    label: String,
+    desc: String,
+    color: Color,
+    onClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .background(cs.background)
+            .border(1.dp, cs.outline, MaterialTheme.shapes.large)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(color.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                label, style = MaterialTheme.typography.titleMedium, color = cs.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                desc, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Edit dialog
+// ══════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShiftEditDialog(
+    shift: Shift,
+    currencySymbol: String,
+    cs: ColorScheme,
+    onDismiss: () -> Unit,
+    onSave: (Shift) -> Unit
+) {
+    var draft by rememberSaveable(stateSaver = jsonSaver<Shift>()) { mutableStateOf(shift) }
+    // The fields keep exactly what was typed. Re-deriving them from the parsed
+    // number on every keystroke turned "12." into "12.0", so the next digit
+    // produced 12.05, backspace could never remove the ".0", and 0.5 couldn't
+    // be entered at all.
+    var rateText by rememberSaveable {
+        mutableStateOf(if (shift.hourlyRate > 0.0) formatDecimalInput(shift.hourlyRate) else "")
+    }
+    var breakText by rememberSaveable {
+        mutableStateOf(if (shift.breakMinutes > 0) shift.breakMinutes.toString() else "")
+    }
+    var showTimePicker by rememberSaveable { mutableStateOf(false) }
+    var pickingStart by rememberSaveable { mutableStateOf(true) }
+    val color = rememberShiftAccent(draft.colorValue)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = cs.surface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(11.dp).background(color, CircleShape))
+                Spacer(Modifier.width(10.dp))
+                Text(draft.name, style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
+            }
+        },
+        text = {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TimeChip("Start", draft.startTime, cs, Modifier.weight(1f)) {
+                        pickingStart = true; showTimePicker = true
+                    }
+                    TimeChip("End", draft.endTime, cs, Modifier.weight(1f)) {
+                        pickingStart = false; showTimePicker = true
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = rateText,
+                    onValueChange = {
+                        rateText = it
+                        draft = draft.copy(hourlyRate = parseDecimal(it) ?: 0.0)
+                    },
+                    label = { Text("Hourly rate") },
+                    prefix = { Text(currencySymbol) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true, shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = breakText,
+                    onValueChange = {
+                        breakText = it
+                        draft = draft.copy(breakMinutes = it.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0)
+                    },
+                    label = { Text("Break (minutes)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true, shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = draft.notes,
+                    onValueChange = { draft = draft.copy(notes = it) },
+                    label = { Text("Note") },
+                    shape = MaterialTheme.shapes.small, maxLines = 4,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(draft) }, shape = CircleShape,
+                colors = ButtonDefaults.buttonColors(containerColor = cs.primary)
+            ) { Text("Save", style = MaterialTheme.typography.labelLarge) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+
+    if (showTimePicker) {
+        val base = if (pickingStart) draft.startTime else draft.endTime
+        val h = base.substringBefore(":").toIntOrNull() ?: 9
+        val m = base.substringAfter(":").toIntOrNull() ?: 0
+        val state = rememberTimePickerState(h, m, is24Hour = true)
         AlertDialog(
-            onDismissRequest = { showEditDialog = false },
-            shape = RoundedCornerShape(28.dp),
-            containerColor = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-                .fillMaxWidth(0.99f)
-                .wrapContentHeight(),
-            title = null,
+            onDismissRequest = { showTimePicker = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = cs.surface,
             text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
-                ) {
-                    // Header with color accent
-                    val shiftColor = Color(tempEditingShift!!.colorValue.toInt())
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(shiftColor.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
-                            .padding(20.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(12.dp)
-                                        .background(shiftColor, CircleShape)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = tempEditingShift!!.name,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onBackground
-                                    )
-                                    Text(
-                                        text = "Shift Details",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                    )
-                                }
-                            }
-                            Surface(
-                                onClick = { showEditDialog = false },
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = "Close",
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // Time Section with visual enhancement
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(bottom = 12.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.EditCalendar,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    "Schedule",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onBackground
-                                )
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                OutlinedCard(
-                                    onClick = { pickingStartTime = true; showTimePicker = true },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.outlinedCardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    )
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            "START",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            letterSpacing = 1.sp
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            tempEditingShift!!.startTime,
-                                            style = MaterialTheme.typography.headlineSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                                // Arrow separator
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.CenterVertically)
-                                        .padding(vertical = 8.dp)
-                                ) {
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                                OutlinedCard(
-                                    onClick = { pickingStartTime = false; showTimePicker = true },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.outlinedCardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    )
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            "END",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            letterSpacing = 1.sp
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            tempEditingShift!!.endTime,
-                                            style = MaterialTheme.typography.headlineSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Financial Details in grid
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    "Hourly Rate",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = tempEditingShift!!.hourlyRate.toString(),
-                                    onValueChange = {
-                                        tempEditingShift = tempEditingShift!!.copy(
-                                            hourlyRate = it.toDoubleOrNull() ?: tempEditingShift!!.hourlyRate
-                                        )
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    prefix = { Text("\$", fontWeight = FontWeight.Bold) },
-                                    singleLine = true,
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                                    )
-                                )
-                            }
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    "Break Time",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = tempEditingShift!!.breakMinutes.toString(),
-                                    onValueChange = {
-                                        tempEditingShift = tempEditingShift!!.copy(
-                                            breakMinutes = it.toIntOrNull() ?: tempEditingShift!!.breakMinutes
-                                        )
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    suffix = { Text("min", fontSize = 12.sp) },
-                                    singleLine = true,
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                                    )
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Notes Section
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                "Notes",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = tempEditingShift!!.notes ?: "",
-                                onValueChange = {
-                                    tempEditingShift = tempEditingShift!!.copy(notes = it)
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 100.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                placeholder = { Text("Add optional notes...", fontSize = 14.sp) },
-                                maxLines = 5,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                                )
-                            )
-                        }
-                    }
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    TimePicker(state = state)
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            val date = selectedDate ?: return@launch
-                            val list = savedShifts[date]?.toMutableList() ?: return@launch
-                            if (editingShiftIndex in list.indices) {
-                                list[editingShiftIndex] = tempEditingShift!!
-                                val updatedMap = savedShifts + (date to list)
-                                savedShifts = updatedMap
-                                shiftManager.saveShifts(updatedMap)
-                            }
-                            showEditDialog = false
-                            sheetState.hide()
-                            showEditSheet = false
-                        }
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Icon(
-                        Icons.Default.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Save Changes", fontWeight = FontWeight.SemiBold)
-                }
-            }
-        )
-
-        // Keep the existing time picker dialog
-        if (showTimePicker) {
-            val initialHour = if (pickingStartTime) {
-                tempEditingShift!!.startTime.split(":").getOrNull(0)?.toIntOrNull() ?: 9
-            } else {
-                tempEditingShift!!.endTime.split(":").getOrNull(0)?.toIntOrNull() ?: 17
-            }
-            val initialMinute = if (pickingStartTime) {
-                tempEditingShift!!.startTime.split(":").getOrNull(1)?.toIntOrNull() ?: 0
-            } else {
-                tempEditingShift!!.endTime.split(":").getOrNull(1)?.toIntOrNull() ?: 0
-            }
-
-            val timeState = rememberTimePickerState(
-                initialHour = initialHour,
-                initialMinute = initialMinute,
-                is24Hour = true
-            )
-            DatePickerDialog(
-                onDismissRequest = { showTimePicker = false },
-                confirmButton = {
-                    TextButton(onClick = {
-                        val formatted = String.format("%02d:%02d", timeState.hour, timeState.minute)
-                        tempEditingShift = if (pickingStartTime) {
-                            tempEditingShift!!.copy(startTime = formatted)
-                        } else {
-                            tempEditingShift!!.copy(endTime = formatted)
-                        }
-                        showTimePicker = false
-                    }) { Text("OK") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showTimePicker = false }) { Text("Cancel") }
-                }
-            ) {
-                Box(modifier = Modifier.padding(24.dp)) {
-                    TimePicker(state = timeState)
-                }
-            }
-        }
-    }
-
-
-// --- QUICK ACTIONS BOTTOM SHEET ---
-    if (showQuickActionsSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showQuickActionsSheet = false },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            dragHandle = {
-                Surface(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                ) {
-                    Spacer(modifier = Modifier.size(width = 40.dp, height = 4.dp))
-                }
-            }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 32.dp)
-            ) {
-                Text(
-                    text = "Quick Actions",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "Select a shift to paste or delete shifts in bulk",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 20.dp)
-                )
-
-                // Bulk Actions Section
-                SheetSectionLabel("BULK ACTIONS")
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // Paste Mode Card
-                    Surface(
-                        onClick = {
-                            scope.launch {
-                                sheetState.hide()
-                                showQuickActionsSheet = false
-                                // Let user select which shift to paste
-                                showShiftSelectionSheet = true
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                Icons.Default.AddToPhotos,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(28.dp)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "Paste Shifts",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-
-                    // Eraser Mode Card
-                    Surface(
-                        onClick = {
-                            scope.launch {
-                                sheetState.hide()
-                                showQuickActionsSheet = false
-                                isEraserMode = true
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFFD32F2F).copy(alpha = 0.1f),
-                        border = BorderStroke(1.dp, Color(0xFFD32F2F).copy(alpha = 0.3f))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = null,
-                                tint = Color(0xFFD32F2F),
-                                modifier = Modifier.size(28.dp)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "Delete Shifts",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                color = Color(0xFFD32F2F)
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(24.dp))
-            }
-        }
-    }
-
-// --- SHIFT SELECTION FOR PASTE ---
-    if (showShiftSelectionSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showShiftSelectionSheet = false },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            dragHandle = {
-                Surface(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                ) {
-                    Spacer(modifier = Modifier.size(width = 40.dp, height = 4.dp))
-                }
-            }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 32.dp)
-            ) {
-                Text(
-                    text = "Select Shift to Paste",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "Tap any shift to activate paste mode",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 20.dp)
-                )
-
-                if (customTemplates.isEmpty()) {
-                    Text(
-                        text = "No shift templates available",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 40.dp)
-                    )
-                } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(customTemplates.size) { index ->
-                            val shift = customTemplates[index]
-                            RedesignedShiftCard(
-                                shift = shift,
-                                onClick = {
-                                    scope.launch {
-                                        clipboardShift = shift
-                                        sheetState.hide()
-                                        showShiftSelectionSheet = false
-                                    }
-                                },
-                                onLongClick = { }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-
-}
-
-// ===================== COMPONENTS =====================
-
-@Composable
-private fun RibbonStat(value: String, label: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            color = color
-        )
-        Text(
-            text = label,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-            letterSpacing = 0.5.sp
+                TextButton(onClick = {
+                    val t = "%02d:%02d".format(state.hour, state.minute)
+                    draft = if (pickingStart) draft.copy(startTime = t) else draft.copy(endTime = t)
+                    showTimePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } }
         )
     }
 }
 
 @Composable
-private fun SheetSectionLabel(text: String) {
-    Text(
-        text = text,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-        letterSpacing = 1.sp,
-        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
-    )
-}
-
-@Composable
-private fun CreateNewCard(onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-        modifier = Modifier.defaultMinSize(minHeight = 78.dp)
+private fun TimeChip(label: String, value: String, cs: ColorScheme, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier
+            .clip(MaterialTheme.shapes.medium)
+            .background(cs.surfaceVariant)
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(
-            modifier = Modifier
-                .padding(14.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                Icons.Default.Add,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = "Create New",
-                color = MaterialTheme.colorScheme.onBackground,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp
-            )
-        }
-    }
-}
-
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun RedesignedShiftCard(
-    shift: Shift,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    val shiftColor = Color(shift.colorValue.toInt())
-    val timeDisplay = if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day" else "${shift.startTime} — ${shift.endTime}"
-    var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.93f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessHigh),
-        label = "cardScale"
-    )
-
-    Surface(
-        modifier = Modifier
-            .scale(scale)
-            .combinedClickable(
-                onClick = { isPressed = true; onClick() },
-                onLongClick = onLongClick
-            ),
-        shape = RoundedCornerShape(14.dp),
-        color = shiftColor.copy(alpha = 0.1f),
-        border = BorderStroke(1.dp, shiftColor.copy(alpha = 0.3f))
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(14.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .background(shiftColor, CircleShape)
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Column {
-                Text(
-                    text = shift.name,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp
-                )
-                Text(
-                    text = timeDisplay,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    fontSize = 10.sp
-                )
-            }
-        }
-    }
-
-    LaunchedEffect(isPressed) {
-        if (isPressed) { kotlinx.coroutines.delay(100); isPressed = false }
-    }
-}
-
-@Composable
-private fun RedesignedCalendarDayCell(
-    dayNumber: Int,
-    dayShifts: List<Shift>,
-    isToday: Boolean,
-    isWeekend: Boolean,
-    isAnimatingAdd: Boolean,
-    isPasteMode: Boolean,
-    isEraserMode: Boolean,
-    onClick: () -> Unit,
-    onAnimationFinished: () -> Unit
-) {
-    val scale = if (isAnimatingAdd) {
-        animateFloatAsState(
-            targetValue = 1f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMedium
-            ),
-            finishedListener = { onAnimationFinished() },
-            label = "cellScale"
-        ).value
-    } else 1f
-
-
-    val todayIndicatorColor = MaterialTheme.colorScheme.primary
-    val surfaceColor = when {
-        isToday -> todayIndicatorColor.copy(alpha = 0.12f)
-        isWeekend -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.15f) // Weekend highlight
-        else -> MaterialTheme.colorScheme.surface
-    }
-
-    val borderColor = if (isToday) {
-        todayIndicatorColor.copy(alpha = 0.6f)
-    } else {
-        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-    }
-
-    Box(
-        modifier = Modifier
-            .padding(1.dp)
-            .aspectRatio(0.72f)
-            .scale(scale)
-            .border(1.dp, borderColor, RoundedCornerShape(10.dp))
-            .clip(RoundedCornerShape(10.dp))
-            .background(surfaceColor)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.TopStart
-    ) {
-        // Today border overlay
-        if (isToday) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .border(1.5.dp, borderColor, RoundedCornerShape(10.dp))
-            )
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(4.dp)
-        ) {
-            // Day number
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.TopStart
-            ) {
-                if (isToday) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .background(todayIndicatorColor, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = dayNumber.toString(),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            lineHeight = 10.sp
-                        )
-                    }
-                } else {
-                    Text(
-                        text = dayNumber.toString(),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(3.dp))
-
-            // Shift indicators - use color bars
-            val displayShifts = if (dayShifts.size > 3) dayShifts.take(3) else dayShifts
-            displayShifts.forEach { shift ->
-                val shiftColor = Color(shift.colorValue.toInt())
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(12.dp)
-                        .background(shiftColor.copy(alpha = 0.85f), RoundedCornerShape(3.dp))
-                        .padding(horizontal = 3.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    Text(
-                        text = shift.name,
-                        color = Color.White.copy(alpha = 0.95f),
-                        fontSize = 7.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        lineHeight = 7.sp,
-                        style = TextStyle(
-                            platformStyle = PlatformTextStyle(includeFontPadding = false),
-                            lineHeightStyle = LineHeightStyle(
-                                alignment = LineHeightStyle.Alignment.Center,
-                                trim = LineHeightStyle.Trim.Both
-                            )
-                        )
-                    )
-                }
-                Spacer(modifier = Modifier.height(2.dp))
-            }
-
-            if (dayShifts.size > 3) {
-                Text(
-                    text = "+${dayShifts.size - 3}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        }
+        Text(label, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+        Spacer(Modifier.height(4.dp))
+        Text(value, style = MaterialTheme.typography.headlineSmall, color = cs.onSurface)
     }
 }
 
@@ -1472,12 +1241,6 @@ private fun RedesignedCalendarDayCell(
 @Composable
 fun MainScreenPreview() {
     ShiftVaultTheme {
-        MainScreen(
-            onSettingsClick = {},
-            onCreateCustomClick = {}
-        )
+        MainScreen(onSettingsClick = {}, onCreateCustomClick = {})
     }
 }
-
-
-

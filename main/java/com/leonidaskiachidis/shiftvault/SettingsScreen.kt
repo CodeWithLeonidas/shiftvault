@@ -1,955 +1,1047 @@
 package com.leonidaskiachidis.shiftvault
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  SettingsScreen — grouped rows in the warm-cream language.
+ *
+ *  Same features and same public signature. Presentation: big header with a
+ *  soft fade into the scroll area, section labels, white cards holding
+ *  divider-separated rows (tinted badge · title · subtitle · value · chevron).
+ *  Week start and Theme are pickers laid out as grids inside their sheets.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.TextButton
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.Payments
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.TableChart
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
-import com.leonidaskiachidis.shiftvault.ui.theme.*
-import kotlinx.coroutines.launch
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.sp
-
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.leonidaskiachidis.shiftvault.ui.theme.AppTheme
+import com.leonidaskiachidis.shiftvault.ui.theme.DarkThemeVariants
+import com.leonidaskiachidis.shiftvault.ui.theme.LightThemeVariants
+import com.leonidaskiachidis.shiftvault.ui.theme.ThemeVariantInfo
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.saveable.rememberSaveable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    /** Which palette set is showing right now — resolved from [themeMode]. */
     isDarkTheme: Boolean,
-    onThemeChange: (Boolean) -> Unit,
+    /** "system", "light" or "dark", as stored. */
+    themeMode: String,
+    onThemeModeChange: (String) -> Unit,
+    themeVariant: String,
+    onThemeVariantChange: (String) -> Unit,
     selectedCurrencyCode: String,
     onCurrencyChange: (String) -> Unit,
+    startOfWeek: String,
+    onStartOfWeekChange: (String) -> Unit,
     onExportPdf: () -> Unit,
     onExportExcel: () -> Unit,
     onBackClick: () -> Unit,
     onBackupExport: () -> Unit,
     onBackupImport: () -> Unit,
-    backupImportPendingJson: String?,
+    /** True while a picked backup file is waiting for the user to confirm. */
+    backupImportPending: Boolean,
     onConfirmImport: () -> Unit,
     onDismissImport: () -> Unit
 ) {
-    var showCurrencySheet by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    val accents = AppTheme.accents
+    val accent = cs.primary
+
+    var showCurrency by rememberSaveable { mutableStateOf(false) }
+    var showWeekStart by rememberSaveable { mutableStateOf(false) }
+    var showTheme by rememberSaveable { mutableStateOf(false) }
+    var showBackup by rememberSaveable { mutableStateOf(false) }
+    var showPrivacy by rememberSaveable { mutableStateOf(false) }
+    var showWhatsNew by rememberSaveable { mutableStateOf(false) }
+
+    // Read from the installed package, so the About row can never drift from
+    // the versionName in build.gradle again.
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "—"
+    }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
-    var showBackupSheet by remember { mutableStateOf(false) }
-    val backupSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-
-    val allCurrencies = remember { CurrencyHelper.getAllCurrencies() }
-    val filteredCurrencies = remember(searchQuery) {
-        if (searchQuery.isEmpty()) allCurrencies
-        else allCurrencies.filter { currency ->
-            currency.name.startsWith(searchQuery, ignoreCase = true) ||
-                    currency.code.startsWith(searchQuery, ignoreCase = true)
+    /**
+     * Picking an option used to flip the `show…` flag straight to false, which
+     * yanks the sheet out of the composition with no animation at all. Running
+     * `sheetState.hide()` first lets it slide down the same way a swipe or a
+     * scrim tap does, and only then is the sheet torn down.
+     */
+    fun dismissSheet(setVisible: (Boolean) -> Unit) {
+        scope.launch { sheetState.hide() }.invokeOnCompletion {
+            if (!sheetState.isVisible) setVisible(false)
         }
     }
 
     val currencySymbol = remember(selectedCurrencyCode) {
-        try {
-            java.util.Currency.getInstance(selectedCurrencyCode)
-                .getSymbol(java.util.Locale.getDefault())
-        } catch (_: Exception) { selectedCurrencyCode }
+        try { java.util.Currency.getInstance(selectedCurrencyCode).getSymbol(java.util.Locale.getDefault()) }
+        catch (_: Exception) { selectedCurrencyCode }
     }
 
-    val accentColor = MaterialTheme.colorScheme.primary
+    val variants = if (isDarkTheme) DarkThemeVariants else LightThemeVariants
+    val variantName = remember(variants, themeVariant) {
+        variants.firstOrNull { it.key == themeVariant }?.displayName ?: "Coral"
+    }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "Settings",
-                            style = MaterialTheme.typography.headlineLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Customize your experience",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f)
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
-                )
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 40.dp)
-        ) {
-            Spacer(modifier = Modifier.height(28.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(cs.background)
+            .statusBarsPadding()
+    ) {
+        ScreenHeader(
+            title = "Settings",
+            subtitle = "Preferences, data, and about"
+        )
 
-            // ── Appearance Section ──
-            SettingsSectionHeader(
-                title = "APPEARANCE",
-                modifier = Modifier.padding(horizontal = 24.dp)
-            )
-            Spacer(modifier = Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
-            SettingsCard(modifier = Modifier.padding(horizontal = 24.dp)) {
-                // Theme Toggle
-                SettingsToggleRow(
-                    icon = if (isDarkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
-                    iconTint = if (isDarkTheme) Color(0xFFFBBF24) else Color(0xFFF97316),
-                    title = "Dark Mode",
-                    subtitle = if (isDarkTheme) "Dark theme active" else "Light theme active",
-                    checked = isDarkTheme,
-                    onCheckedChange = onThemeChange,
-                    accentColor = accentColor
-                )
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 12.dp)
+            ) {
+                // ── General ──
+                SectionLabel("General")
+                Group {
+                    SettingRow(
+                        icon = AppIcons.Payments,
+                        badgeColor = accents.morning,
+                        title = "Currency",
+                        subtitle = "Set your default currency",
+                        value = "$currencySymbol $selectedCurrencyCode"
+                    ) { showCurrency = true }
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.CalendarMonth,
+                        badgeColor = accent,
+                        title = "Week start day",
+                        subtitle = "First day of the week in your calendar",
+                        value = startOfWeek
+                    ) { showWeekStart = true }
+                }
 
-                SlimDivider()
+                // ── Appearance ──
+                SectionLabel("Appearance")
+                Group {
+                    ThemeModeRow(
+                        icon = if (isDarkTheme) AppIcons.DarkMode else AppIcons.LightMode,
+                        badgeColor = accents.night,
+                        mode = themeMode,
+                        onChange = onThemeModeChange
+                    )
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.Palette,
+                        badgeColor = accents.evening,
+                        title = "Theme",
+                        subtitle = "Choose your accent palette",
+                        value = variantName
+                    ) { showTheme = true }
+                }
 
-                // Currency
-                SettingsNavigationRow(
-                    icon = Icons.Default.Payments,
-                    iconTint = Color(0xFF10B981),
-                    title = "Currency",
-                    trailing = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF10B981).copy(alpha = 0.1f)
-                            ) {
-                                Text(
-                                    text = "$currencySymbol $selectedCurrencyCode",
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF10B981)
+                // ── Data ──
+                SectionLabel("Data")
+                Group {
+                    SettingRow(
+                        icon = AppIcons.PictureAsPdf,
+                        badgeColor = accents.negative,
+                        title = "Export to PDF",
+                        subtitle = "Download your shift history",
+                        value = null,
+                        onClick = onExportPdf
+                    )
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.TableChart,
+                        badgeColor = cs.secondary,
+                        title = "Export to Excel",
+                        subtitle = "Download as a spreadsheet",
+                        value = null,
+                        onClick = onExportExcel
+                    )
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.Save,
+                        badgeColor = accents.positive,
+                        title = "Back up & restore",
+                        subtitle = "Export your data or restore it",
+                        value = null
+                    ) { showBackup = true }
+                }
+
+                // ── Other ──
+                SectionLabel("Other")
+                Group {
+                    SettingRow(
+                        icon = AppIcons.Star,
+                        badgeColor = accents.night,
+                        title = "Rate the app",
+                        subtitle = "Share your feedback",
+                        value = null
+                    ) {
+                        try {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("market://details?id=com.leonidaskiachidis.shiftvault")
                                 )
-                            }
-                            Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.25f),
-                            modifier = Modifier.size(20.dp)
+                            )
+                        } catch (_: Exception) {
+                        }
+                    }
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.Share,
+                        badgeColor = cs.tertiary,
+                        title = "Share with friends",
+                        subtitle = "Tell others about ShiftVault",
+                        value = null
+                    ) {
+                        val i = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Check out ShiftVault!")
+                            putExtra(
+                                Intent.EXTRA_TEXT,
+                                "I've been using ShiftVault to manage my work shifts — check it out:\n\nhttps://play.google.com/store/apps/details?id=com.leonidaskiachidis.shiftvault"
                             )
                         }
-                    },
-                    onClick = { showCurrencySheet = true }
+                        context.startActivity(Intent.createChooser(i, "Share ShiftVault"))
+                    }
+                }
+
+                // ── About ──
+                SectionLabel("About")
+                Group {
+                    SettingRow(
+                        icon = AppIcons.NewReleases,
+                        badgeColor = accents.evening,
+                        title = "What's new",
+                        subtitle = "Latest updates and features",
+                        value = null
+                    ) { showWhatsNew = true }
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.PrivacyTip,
+                        badgeColor = accents.morning,
+                        title = "Privacy policy",
+                        subtitle = "How we handle your data",
+                        value = null
+                    ) { showPrivacy = true }
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.Email,
+                        badgeColor = accent,
+                        title = "Contact developer",
+                        subtitle = "Send feedback or report an issue",
+                        value = null
+                    ) {
+                        val email = Intent(Intent.ACTION_SENDTO).apply {
+                            data = Uri.parse("mailto:kiachidis.leonidas@gmail.com")
+                            putExtra(Intent.EXTRA_SUBJECT, "ShiftVault Feedback")
+                        }
+                        try { context.startActivity(Intent.createChooser(email, "Send Email")) } catch (_: Exception) {}
+                    }
+                    RowDivider()
+                    SettingRow(
+                        icon = AppIcons.EditCalendar,
+                        badgeColor = cs.onSurfaceVariant,
+                        title = "About Shift Vault",
+                        subtitle = "Version $versionName",
+                        value = null,
+                        showChevron = false
+                    ) { }
+                }
+
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "Developed by Leonidas Kiachidis",
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = cs.onSurfaceVariant,
+                    textAlign = TextAlign.Center
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // ── Data Management Section ──
-            SettingsSectionHeader(
-                title = "DATA",
-                modifier = Modifier.padding(horizontal = 24.dp)
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-
-            SettingsCard(modifier = Modifier.padding(horizontal = 24.dp)) {
-                SettingsNavigationRow(
-                    icon = Icons.Default.PictureAsPdf,
-                    iconTint = Color(0xFFF43F5E),
-                    title = "Export to PDF",
-                    subtitle = "Download your shift history",
-                    onClick = onExportPdf
-                )
-
-                SlimDivider()
-
-                SettingsNavigationRow(
-                    icon = Icons.Default.TableChart,
-                    iconTint = Color(0xFF3B82F6),
-                    title = "Export to Excel",
-                    subtitle = "Download as spreadsheet",  // Remove badge
-                    onClick = onExportExcel  // Add this parameter
-                )
-
-
-                SlimDivider()
-
-                SettingsNavigationRow(
-                    icon = Icons.Default.Save,
-                    iconTint = Color(0xFF8B5CF6),
-                    title = "Backup & Restore",
-                    subtitle = "Export or import your data",
-                    onClick = { showBackupSheet = true }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // ── About Section ──
-            SettingsSectionHeader(
-                title = "ABOUT",
-                modifier = Modifier.padding(horizontal = 24.dp)
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-
-            SettingsCard(modifier = Modifier.padding(horizontal = 24.dp)) {
-                SettingsNavigationRow(
-                    icon = Icons.Default.Info,
-                    iconTint = Color(0xFF64748B),
-                    title = "Application Info",
-                    subtitle = "ShiftVault v1.0.0",
-                    onClick = {}
-                )
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // ── Footer ──
-            Text(
-                text = "Made with ❤\uFE0F by Leonidas",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f),
-                textAlign = TextAlign.Center,
+            // Soft fade where the header meets the scroll area
+            Box(
                 modifier = Modifier
+                    .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .padding(bottom = 8.dp)
+                    .height(20.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(cs.background, cs.background.copy(alpha = 0f))
+                        )
+                    )
             )
         }
     }
 
-    // ── Currency Bottom Sheet ──
-    if (showCurrencySheet) {
+    // ══════════════════════════════════════════════════════════
+    //  Currency sheet
+    // ══════════════════════════════════════════════════════════
+    if (showCurrency) {
+        val all = remember { CurrencyHelper.getAllCurrencies() }
+        var query by remember { mutableStateOf("") }
+        val filtered = remember(query, all) {
+            if (query.isBlank()) all
+            else all.filter { it.name.startsWith(query, true) || it.code.startsWith(query, true) }
+        }
         ModalBottomSheet(
-            onDismissRequest = {
-                showCurrencySheet = false
-                searchQuery = ""
-            },
+            onDismissRequest = { showCurrency = false },
             sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {Spacer(modifier = Modifier.height(12.dp))
-                    Box(
-                        modifier = Modifier
-                            .width(36.dp)
-                            .height(4.dp)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
-                                RoundedCornerShape(2.dp)
-                            )
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
+            containerColor = cs.surface,
+            contentColor = cs.onSurface,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            dragHandle = { SettingsHandle() }
         ) {
             Column(
-                modifier = Modifier
+                Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.8f)
+                    .fillMaxHeight(0.88f)
+                    .padding(horizontal = 22.dp)
+                    .padding(bottom = 16.dp)
             ) {
-                // Sheet Header
-                Text(
-                    text = "Select Currency",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 24.dp)
+                SheetHeading("Currency", "Used for rates and earnings across the app.")
+                Spacer(Modifier.height(16.dp))
+                SheetSearchField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = "Search currency"
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Choose your preferred currency for earnings",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Search Field
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
-                    placeholder = {
-                        Text(
-                            "Search currency…",
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                            modifier = Modifier.size(20.dp)
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear",
-                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(18.dp)
+                Spacer(Modifier.height(14.dp))
+                LazyColumn(
+                    Modifier.weight(1f).nestedScroll(SheetScrollLock),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(filtered, key = { it.code }) { c ->
+                        val selected = c.code == selectedCurrencyCode
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.large)
+                                .background(
+                                    if (selected) accent.copy(alpha = 0.12f) else cs.background
+                                )
+                                .border(
+                                    1.dp,
+                                    if (selected) accent else cs.outline,
+                                    MaterialTheme.shapes.large
+                                )
+                                .clickable {
+                                    onCurrencyChange(c.code)
+                                    dismissSheet { showCurrency = it }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                c.symbol,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (selected) accent else cs.onSurface,
+                                modifier = Modifier.widthIn(min = 36.dp), maxLines = 1
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    c.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = cs.onSurface,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    c.code,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = cs.onSurfaceVariant
                                 )
                             }
-                        }
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        focusedBorderColor = accentColor.copy(alpha = 0.5f),
-                        unfocusedBorderColor = Color.Transparent,
-                        cursorColor = accentColor
-                    ),
-                    textStyle = MaterialTheme.typography.bodyMedium
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Currency List
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(bottom = 24.dp)
-                ) {
-                    if (filteredCurrencies.isEmpty()) {
-                        item(key = "empty") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 48.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(40.dp),
-                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "No results for \"$searchQuery\"",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                                )
+                            if (selected) {
+                                Icon(AppIcons.Check, null, tint = accent, modifier = Modifier.size(20.dp))
                             }
                         }
                     }
+                }
+            }
+        }
+    }
 
-                    itemsIndexed(
-                        items = filteredCurrencies,
-                        key = { _, currency -> currency.code }
-                    ) { index, currency ->
-                        if (searchQuery.isEmpty() && index == 5) {
-                            Column {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 24.dp)
-                                        .height(1.dp)
-                                        .background(
-                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)
-                                        )
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "ALL CURRENCIES",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
-                                )
-                            }
+    // ══════════════════════════════════════════════════════════
+    //  Week start sheet — grid
+    // ══════════════════════════════════════════════════════════
+    if (showWeekStart) {
+        ModalBottomSheet(
+            onDismissRequest = { showWeekStart = false },
+            sheetState = sheetState,
+            containerColor = cs.surface,
+            contentColor = cs.onSurface,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            dragHandle = { SettingsHandle() }
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp)
+                    .padding(bottom = 36.dp)
+            ) {
+                SheetHeading("Week start day", "Choose the first day of the week in your calendar.")
+                Spacer(Modifier.height(18.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    listOf(
+                        "Monday" to listOf("M", "T", "W", "T", "F", "S", "S"),
+                        "Sunday" to listOf("S", "M", "T", "W", "T", "F", "S")
+                    ).forEach { (day, strip) ->
+                        WeekStartCard(
+                            day = day,
+                            strip = strip,
+                            selected = startOfWeek == day,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            onStartOfWeekChange(day)
+                            dismissSheet { showWeekStart = it }
                         }
+                    }
+                }
+            }
+        }
+    }
 
-                        val isSelected = currency.code == selectedCurrencyCode
-                        CurrencyRow(
-                            currency = currency,
-                            isSelected = isSelected,
-                            accentColor = accentColor,
-                            onClick = {
-                                onCurrencyChange(currency.code)
-                                searchQuery = ""
-                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) showCurrencySheet = false
+    // ══════════════════════════════════════════════════════════
+    //  Theme sheet — grid
+    // ══════════════════════════════════════════════════════════
+    if (showTheme) {
+        ModalBottomSheet(
+            onDismissRequest = { showTheme = false },
+            sheetState = sheetState,
+            containerColor = cs.surface,
+            contentColor = cs.onSurface,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            dragHandle = { SettingsHandle() }
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp)
+                    .padding(bottom = 36.dp)
+            ) {
+                SheetHeading(
+                    "Theme",
+                    "Accent palette for the ${if (isDarkTheme) "dark" else "light"} theme."
+                )
+                Spacer(Modifier.height(18.dp))
+                Column(
+                    Modifier
+                        .heightIn(max = 460.dp)
+                        .nestedScroll(SheetScrollLock)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    variants.chunked(2).forEach { row ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            row.forEach { v ->
+                                ThemeCard(
+                                    variant = v,
+                                    selected = v.key == themeVariant,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    onThemeVariantChange(v.key)
+                                    dismissSheet { showTheme = it }
                                 }
                             }
-                        )
+                            if (row.size == 1) Spacer(Modifier.weight(1f))
+                        }
                     }
                 }
             }
         }
     }
 
-    // ── Backup Bottom Sheet ──
-    if (showBackupSheet) {
+    // ══════════════════════════════════════════════════════════
+    //  Backup sheet
+    // ══════════════════════════════════════════════════════════
+    if (showBackup) {
         ModalBottomSheet(
-            onDismissRequest = { showBackupSheet = false },
-            sheetState = backupSheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {Spacer(modifier = Modifier.height(12.dp))
-                    Box(
-                        modifier = Modifier
-                            .width(36.dp)
-                            .height(4.dp)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
-                                RoundedCornerShape(2.dp)
-                            )
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
+            onDismissRequest = { showBackup = false },
+            sheetState = sheetState,
+            containerColor = cs.surface,
+            contentColor = cs.onSurface,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            dragHandle = { SettingsHandle() }
         ) {
             Column(
-                modifier = Modifier
+                Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 40.dp)
+                    .padding(horizontal = 22.dp)
+                    .padding(bottom = 36.dp)
             ) {
-                Text(
-                    text = "Backup & Restore",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
+                SheetHeading(
+                    "Back up & restore",
+                    "Save all your shifts and saved shifts to a file, or restore from a previous backup."
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Export your data to a file or import from a previous backup",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Export Button
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFF8B5CF6).copy(alpha = 0.1f),
-                    border = BorderStroke(1.dp, Color(0xFF8B5CF6).copy(alpha = 0.15f)),
-                    onClick = {
-                        scope.launch { backupSheetState.hide() }.invokeOnCompletion {
-                            if (!backupSheetState.isVisible) showBackupSheet = false
-                        }
-                        onBackupExport()
-                    }
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = { dismissSheet { showBackup = it }; onBackupExport() },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent),
+                    elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp, 0.dp, 0.dp, 0.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(Color(0xFF8B5CF6).copy(alpha = 0.15f), RoundedCornerShape(12.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Upload,
-                                contentDescription = null,
-                                tint = Color(0xFF8B5CF6),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Export Backup",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Save shifts & templates to a JSON file",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                    Icon(AppIcons.Upload, null, Modifier.size(19.dp))
+                    Spacer(Modifier.width(9.dp))
+                    Text("Export backup", style = MaterialTheme.typography.labelLarge)
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Import Button
+                Spacer(Modifier.height(12.dp))
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFF3B82F6).copy(alpha = 0.1f),
-                    border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.15f)),
-                    onClick = {
-                        scope.launch { backupSheetState.hide() }.invokeOnCompletion {
-                            if (!backupSheetState.isVisible) showBackupSheet = false
-                        }
-                        onBackupImport()
-                    }
+                    onClick = { dismissSheet { showBackup = it }; onBackupImport() },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = CircleShape,
+                    color = cs.surfaceVariant,
+                    contentColor = cs.onSurface
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
+                        Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(Color(0xFF3B82F6).copy(alpha = 0.15f), RoundedCornerShape(12.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Download,
-                                contentDescription = null,
-                                tint = Color(0xFF3B82F6),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Import Backup",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Restore from a previously saved file",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Icon(AppIcons.Download, null, Modifier.size(19.dp), tint = cs.onSurface)
+                        Spacer(Modifier.width(9.dp))
+                        Text("Import backup", style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
         }
     }
 
-    // ── Import Confirmation Dialog ──
-    if (backupImportPendingJson != null) {
+    // ══════════════════════════════════════════════════════════
+    //  Dialogs
+    // ══════════════════════════════════════════════════════════
+    if (backupImportPending) {
         AlertDialog(
             onDismissRequest = onDismissImport,
-            shape = RoundedCornerShape(20.dp),
-            containerColor = MaterialTheme.colorScheme.surface,
-            icon = {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color(0xFFFEF3C7), RoundedCornerShape(14.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = null,
-                        tint = Color(0xFFF59E0B),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = cs.surface,
+            icon = { Icon(AppIcons.Warning, null, tint = accents.night) },
             title = {
                 Text(
-                    text = "Replace All Data?",
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    "Restore from backup?",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = cs.onSurface
                 )
             },
             text = {
                 Text(
-                    text = "This will permanently replace all your current shifts and templates with the data from the backup file. This action cannot be undone.",
+                    "This replaces all your current shifts and saved shifts with the backup data. It can't be undone.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    textAlign = TextAlign.Center
+                    color = cs.onSurfaceVariant
                 )
             },
             confirmButton = {
                 Button(
                     onClick = onConfirmImport,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFF43F5E)
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Replace Data", fontWeight = FontWeight.SemiBold)
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Restore", style = MaterialTheme.typography.labelLarge) }
+            },
+            dismissButton = { TextButton(onClick = onDismissImport) { Text("Cancel") } }
+        )
+    }
+
+    if (showWhatsNew) {
+        AlertDialog(
+            onDismissRequest = { showWhatsNew = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = cs.surface,
+            title = {
+                Text("What's new", style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    WhatsNew("Refreshed design", "A warmer, softer look across every screen.", accent)
+                    WhatsNew("New analytics", "Period deltas, hour distribution and insights.", accent)
+                    WhatsNew("Eight themes", "Pick a palette for light and dark separately.", accent)
                 }
             },
-            dismissButton = {
-                TextButton(
-                    onClick = onDismissImport,
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Cancel")
+            confirmButton = {
+                Button(
+                    onClick = { showWhatsNew = false },
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Got it", style = MaterialTheme.typography.labelLarge) }
+            }
+        )
+    }
+
+    if (showPrivacy) {
+        AlertDialog(
+            onDismissRequest = { showPrivacy = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = cs.surface,
+            title = {
+                Text("Privacy policy", style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
+            },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "ShiftVault stores all of your data locally on your device. Nothing is uploaded to any server, and no personal information is collected or shared. Backups you create are saved only where you choose. You stay in full control of your data at all times.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant
+                    )
                 }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showPrivacy = false },
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Close", style = MaterialTheme.typography.labelLarge) }
             }
         )
     }
 }
 
-// ── Reusable Components ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  Building blocks
+// ══════════════════════════════════════════════════════════════
 
 @Composable
-private fun SettingsSectionHeader(
-    title: String,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(3.dp, 14.dp)
-                .background(
-                    MaterialTheme.colorScheme.primary,
-                    RoundedCornerShape(2.dp)
-                )
+private fun SectionLabel(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.padding(
+            start = AppSpace.screenH + 4.dp,
+            end = AppSpace.screenH,
+            top = 4.dp,
+            bottom = 10.dp
         )
-        Spacer(modifier = Modifier.width(10.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
-        )
-    }
-}
-
-@Composable
-private fun SettingsCard(
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)
-        )
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            content()
-        }
-    }
-}
-
-@Composable
-private fun SlimDivider() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .height(1.dp)
-            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.06f))
     )
 }
 
 @Composable
-private fun SettingsToggleRow(
-    icon: ImageVector,
-    iconTint: Color,
-    title: String,
-    subtitle: String? = null,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    accentColor: Color
-) {
-    Row(
+private fun Group(content: @Composable ColumnScope.() -> Unit) {
+    SoftCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onCheckedChange(!checked) }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        SettingsIconBadge(icon = icon, tint = iconTint)
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            subtitle?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
-                )
-            }
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = null,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = accentColor,
-                uncheckedThumbColor = MaterialTheme.colorScheme.outline,
-                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
-                uncheckedBorderColor = Color.Transparent
-            )
-        )
-    }
+            .padding(horizontal = AppSpace.screenH),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(vertical = 4.dp),
+        content = content
+    )
+    Spacer(Modifier.height(22.dp))
 }
 
 @Composable
-private fun SettingsNavigationRow(
-    icon: ImageVector,
-    iconTint: Color,
-    title: String,
-    subtitle: String? = null,
-    badge: String? = null,
-    trailing: @Composable (() -> Unit)? = null,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        SettingsIconBadge(icon = icon, tint = iconTint)
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            subtitle?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
-                )
-            }}
-
-        if (badge != null) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)
-            ) {
-                Text(
-                    text = badge,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.tertiary
-                )
-            }
-        } else if (trailing != null) {
-            trailing()
-        } else {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f),
-                modifier = Modifier.size(20.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun SettingsIconBadge(
-    icon: ImageVector,
-    tint: Color
-) {
+private fun RowDivider() =
     Box(
-        modifier = Modifier
-            .size(38.dp)
-            .background(tint.copy(alpha = 0.1f), RoundedCornerShape(11.dp)),
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 76.dp, end = 16.dp)
+            .height(1.dp)
+            .background(MaterialTheme.colorScheme.outline)
+    )
+
+@Composable
+private fun Badge(icon: Painter, color: Color) =
+    Box(
+        Modifier.size(42.dp).clip(CircleShape).background(color.copy(alpha = 0.16f)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(20.dp)
+        Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
+    }
+
+@Composable
+private fun ValuePill(text: String) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        Modifier
+            .clip(CircleShape)
+            .background(cs.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = cs.onSurfaceVariant,
+            maxLines = 1
         )
     }
 }
 
 @Composable
-private fun CurrencyRow(
-    currency: CurrencyInfo,
-    isSelected: Boolean,
-    accentColor: Color,
+private fun SettingRow(
+    icon: Painter,
+    badgeColor: Color,
+    title: String,
+    subtitle: String?,
+    value: String?,
+    showChevron: Boolean = true,
     onClick: () -> Unit
 ) {
+    val cs = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier
+        Modifier
             .fillMaxWidth()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
-            .then(
-                if (isSelected) Modifier.background(accentColor.copy(alpha = 0.06f))
-                else Modifier
-            )
-            .padding(horizontal = 24.dp, vertical = 13.dp),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Symbol badge
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .background(
-                    if (isSelected) accentColor.copy(alpha = 0.12f)
-                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    RoundedCornerShape(10.dp)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
+        Badge(icon, badgeColor)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
             Text(
-                text = currency.symbol, // <-- Use CurrencyInfo properties
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = if (isSelected) accentColor
-                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
             )
+            if (subtitle != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+            }
         }
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = currency.name, // <-- Use CurrencyInfo properties
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = currency.code, // <-- Use CurrencyInfo properties
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
-            )
+        if (value != null) {
+            Spacer(Modifier.width(10.dp))
+            ValuePill(value)
         }
-        if (isSelected) {
+        if (showChevron) {
+            Spacer(Modifier.width(6.dp))
             Icon(
-                imageVector = Icons.Default.Check,
-                contentDescription = null,
-                tint = accentColor,
-                modifier = Modifier.size(20.dp)
+                AppIcons.ChevronRight, null,
+                tint = cs.onSurfaceVariant, modifier = Modifier.size(20.dp)
             )
         }
     }
 }
 
-@Preview(showBackground = true, name = "Settings Dark")
+private val ThemeModes = listOf(
+    "system" to "System",
+    "light" to "Light",
+    "dark" to "Dark"
+)
+
+/**
+ * Light / dark / follow the phone. The old on-off switch could only ever store
+ * "light" or "dark", so once it was touched there was no way back to following
+ * the system setting.
+ */
 @Composable
-fun SettingsScreenPreviewDark() {
-    ShiftVaultTheme(darkTheme = true) {
-        SettingsScreen(
-            isDarkTheme = true,
-            onThemeChange = {},
-            selectedCurrencyCode = "EUR",
-            onCurrencyChange = {},
-            onExportPdf = {},
-            onBackClick = {},
-            onExportExcel = {},
-            onBackupExport = {},
-            onBackupImport = {},
-            backupImportPendingJson = null,
-            onConfirmImport = {},
-            onDismissImport = {}
-        )
+private fun ThemeModeRow(
+    icon: Painter,
+    badgeColor: Color,
+    mode: String,
+    onChange: (String) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Badge(icon, badgeColor)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Theme mode",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    when (mode) {
+                        "light" -> "Always light"
+                        "dark" -> "Always dark"
+                        else -> "Follows your phone's setting"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        // Same segmented control as the day-type picker in the shift form.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 58.dp)
+                .clip(CircleShape)
+                .background(cs.surfaceVariant)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            ThemeModes.forEach { (key, label) ->
+                // Anything unrecognised is treated as "system", matching MainActivity.
+                val selected = key == mode || (key == "system" && mode !in listOf("light", "dark"))
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(CircleShape)
+                        .background(if (selected) cs.primary else Color.Transparent)
+                        .clickable { if (!selected) onChange(key) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) cs.onPrimary else cs.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
     }
 }
 
-@Preview(showBackground = true, name = "Settings Light")
+// ══════════════════════════════════════════════════════════════
+//  Picker cards
+// ══════════════════════════════════════════════════════════════
+
 @Composable
-fun SettingsScreenPreviewLight() {
-    ShiftVaultTheme(darkTheme = false) {
-        SettingsScreen(
-            isDarkTheme = false,
-            onThemeChange = {},
-            selectedCurrencyCode = "EUR",
-            onCurrencyChange = {},
-            onExportPdf = {},
-            onBackClick = {},
-            onExportExcel = {},
-            onBackupExport = {},
-            onBackupImport = {},
-            backupImportPendingJson = null,
-            onConfirmImport = {},
-            onDismissImport = {}
-        )
+private fun WeekStartCard(
+    day: String,
+    strip: List<String>,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        modifier
+            .clip(MaterialTheme.shapes.large)
+            .background(if (selected) cs.primary.copy(alpha = 0.12f) else cs.background)
+            .border(
+                if (selected) 2.dp else 1.dp,
+                if (selected) cs.primary else cs.outline,
+                MaterialTheme.shapes.large
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 18.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                day,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (selected) cs.primary else cs.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
+            )
+            if (selected) {
+                Icon(AppIcons.Check, null, tint = cs.primary, modifier = Modifier.size(18.dp))
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(Modifier.fillMaxWidth()) {
+            strip.forEachIndexed { index, label ->
+                Box(
+                    modifier = Modifier.weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (index == 0 && selected) cs.primary else cs.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeCard(
+    variant: ThemeVariantInfo,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        modifier
+            .clip(MaterialTheme.shapes.large)
+            .background(if (selected) cs.primary.copy(alpha = 0.12f) else cs.background)
+            .border(
+                if (selected) 2.dp else 1.dp,
+                if (selected) cs.primary else cs.outline,
+                MaterialTheme.shapes.large
+            )
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(14.dp)
+    ) {
+        // Palette preview: background block with two swatches on it
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .clip(MaterialTheme.shapes.small)
+                .background(variant.previewBackground)
+        ) {
+            Row(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(Modifier.size(22.dp).clip(CircleShape).background(variant.previewPrimary))
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier
+                        .size(34.dp, 14.dp)
+                        .clip(CircleShape)
+                        .background(variant.previewSurface)
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                variant.displayName,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (selected) cs.primary else cs.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            if (selected) {
+                Icon(AppIcons.Check, null, tint = cs.primary, modifier = Modifier.size(17.dp))
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Sheet pieces
+// ══════════════════════════════════════════════════════════════
+
+@Composable
+private fun SettingsHandle() {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(cs.outline))
+    }
+}
+
+@Composable
+private fun SheetHeading(title: String, caption: String?) {
+    val cs = MaterialTheme.colorScheme
+    Text(title, style = MaterialTheme.typography.displayMedium, color = cs.onSurface)
+    if (caption != null) {
+        Spacer(Modifier.height(5.dp))
+        Text(caption, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun SheetSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(CircleShape)
+            .background(cs.background)
+            .border(1.dp, cs.outline, CircleShape)
+            .padding(horizontal = 18.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(AppIcons.Search, null, tint = cs.onSurfaceVariant, modifier = Modifier.size(19.dp))
+        Spacer(Modifier.width(13.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty()) {
+                Text(
+                    placeholder,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+                cursorBrush = SolidColor(cs.primary),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (value.isNotEmpty()) {
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                AppIcons.Close, "Clear",
+                tint = cs.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { onValueChange("") }
+            )
+        }
+    }
+}
+
+@Composable
+private fun WhatsNew(title: String, body: String, accent: Color) {
+    val cs = MaterialTheme.colorScheme
+    Row {
+        Box(Modifier.padding(top = 7.dp).size(7.dp).clip(CircleShape).background(accent))
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+            Spacer(Modifier.height(2.dp))
+            Text(body, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        }
     }
 }

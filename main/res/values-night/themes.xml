@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+        Same theme, dark window background. Without this the window is painted
+        light for the frame or two before Compose takes over, which reads as a
+        white flash every cold start in dark mode.
+    -->
+    <style name="Theme.ShiftVault" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/night_background</item>
+    </style>
+</resources>
