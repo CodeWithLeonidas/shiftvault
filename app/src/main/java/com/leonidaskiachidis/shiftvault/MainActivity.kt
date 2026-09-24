@@ -310,17 +310,18 @@ class MainActivity : ComponentActivity() {
                     // they are latched here. The overlay keeps rendering the same
                     // content while it slides away instead of blanking out mid
                     // animation — and it stops recomposing the form on every pop.
-                    var customShiftArgs by remember {
-                        mutableStateOf<Pair<java.time.LocalDate?, Int?>?>(null)
-                    }
+                    var customShiftArgs by remember { mutableStateOf<CustomShiftArgs?>(null) }
                     if (isCustomShiftVisible) {
                         val entry = navBackStackEntry
                         val dateString = entry?.arguments?.getString("date")
-                        val rawIndex = entry?.arguments?.getInt("templateIndex") ?: -1
-                        val parsed =
-                            if (dateString == null || dateString == "none") null
-                            else java.time.LocalDate.parse(dateString)
-                        val next = parsed to (if (rawIndex == -1) null else rawIndex)
+                        val rawTemplate = entry?.arguments?.getInt("templateIndex") ?: -1
+                        val rawEntry = entry?.arguments?.getInt("entryIndex") ?: -1
+                        val next = CustomShiftArgs(
+                            date = if (dateString == null || dateString == "none") null
+                            else java.time.LocalDate.parse(dateString),
+                            templateIndex = rawTemplate.takeIf { it >= 0 },
+                            entryIndex = rawEntry.takeIf { it >= 0 }
+                        )
                         if (customShiftArgs != next) customShiftArgs = next
                     }
 
@@ -352,6 +353,11 @@ class MainActivity : ComponentActivity() {
                                         onSettingsClick = { navController.navigate(Screen.Settings.route) },
                                         onCreateCustomClick = { date ->
                                             navController.navigate(Screen.CustomShift.createRoute(date.toString()))
+                                        },
+                                        onEditEntry = { date, index ->
+                                            navController.navigate(
+                                                Screen.CustomShift.createRoute(date.toString(), entryIndex = index)
+                                            )
                                         },
                                         startOfWeek = startOfWeek,
                                         currencyCode = selectedCurrencyCode,
@@ -521,6 +527,9 @@ class MainActivity : ComponentActivity() {
                                         navArgument("date") { type = NavType.StringType },
                                         navArgument("templateIndex") {
                                             type = NavType.IntType; defaultValue = -1
+                                        },
+                                        navArgument("entryIndex") {
+                                            type = NavType.IntType; defaultValue = -1
                                         }
                                     )
                                 ) {
@@ -564,11 +573,12 @@ class MainActivity : ComponentActivity() {
                             exit = NavigationTransitions.customShiftExit,
                             modifier = Modifier.fillMaxSize()
                         ) {
-                            val (date, templateIndex) = customShiftArgs ?: (null to null)
+                            val args = customShiftArgs ?: CustomShiftArgs(null, null, null)
 
                             CustomShiftScreen(
-                                selectedDate = date,
-                                templateIndex = templateIndex,
+                                selectedDate = args.date,
+                                templateIndex = args.templateIndex,
+                                entryIndex = args.entryIndex,
                                 shiftManager = shiftManager,
                                 currencyCode = selectedCurrencyCode,
                                 activeProfile = activeProfile,
@@ -746,6 +756,13 @@ private fun UnreadableDataDialog(onDismiss: () -> Unit) {
         }
     )
 }
+
+/** The shift form's arguments, latched while its overlay animates away. */
+private data class CustomShiftArgs(
+    val date: java.time.LocalDate?,
+    val templateIndex: Int?,
+    val entryIndex: Int?
+)
 
 /** Pops the CustomShift overlay, and only ever that. */
 private fun popCustomShift(navController: androidx.navigation.NavController) {

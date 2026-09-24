@@ -110,6 +110,8 @@ private fun buildMonthCells(month: YearMonth, startOfWeek: String): List<LocalDa
 fun MainScreen(
     onSettingsClick: () -> Unit,
     onCreateCustomClick: (LocalDate) -> Unit,
+    /** Opens the full shift form on one calendar entry (index within the active job's day). */
+    onEditEntry: (LocalDate, Int) -> Unit = { _, _ -> },
     startOfWeek: String = "Monday",
     currencyCode: String = "EUR",
     userName: String = "",
@@ -249,10 +251,6 @@ fun MainScreen(
     var showPickToPasteSheet by rememberSaveable { mutableStateOf(false) }
     var selectedDate by rememberSaveable { mutableStateOf<LocalDate?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    // Edit dialog state
-    var editingShift by rememberSaveable(stateSaver = jsonSaver<Shift?>()) { mutableStateOf(null) }
-    var editingIndex by rememberSaveable { mutableIntStateOf(-1) }
 
     // Bulk modes
     var clipboardShift by rememberSaveable(stateSaver = jsonSaver<Shift?>()) { mutableStateOf(null) }
@@ -617,7 +615,12 @@ fun MainScreen(
                 dayShifts.forEachIndexed { index, shift ->
                     DayShiftRow(
                         shift = shift,
-                        onEdit = { editingIndex = index; editingShift = shift.copy() },
+                        onEdit = {
+                            scope.launch {
+                                sheetState.hide(); showDaySheet = false
+                                onEditEntry(date, index)
+                            }
+                        },
                         onDelete = {
                             scope.launch {
                                 if (dayShifts.size == 1) { sheetState.hide(); showDaySheet = false }
@@ -716,29 +719,6 @@ fun MainScreen(
                 }
             }
         }
-    }
-
-    editingShift?.let { shift ->
-        ShiftEditDialog(
-            shift = shift,
-            currencySymbol = currencySymbol,
-            cs = cs,
-            onDismiss = { editingShift = null },
-            onSave = { updated ->
-                val date = selectedDate
-                val index = editingIndex
-                if (date != null) {
-                    applyUpdate { map ->
-                        val list = ProfileScope.daySlice(map, date, activeProfileId).toMutableList()
-                        if (index in list.indices) {
-                            list[index] = updated.copy(jobId = activeProfileId)
-                            ProfileScope.withDaySlice(map, date, activeProfileId, list)
-                        } else map
-                    }
-                }
-                editingShift = null
-            }
-        )
     }
 }
 
@@ -1276,141 +1256,6 @@ private fun QuickAction(
                 maxLines = 1, overflow = TextOverflow.Ellipsis
             )
         }
-    }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  Edit dialog
-// ══════════════════════════════════════════════════════════════
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ShiftEditDialog(
-    shift: Shift,
-    currencySymbol: String,
-    cs: ColorScheme,
-    onDismiss: () -> Unit,
-    onSave: (Shift) -> Unit
-) {
-    var draft by rememberSaveable(stateSaver = jsonSaver<Shift>()) { mutableStateOf(shift) }
-    // The fields keep exactly what was typed. Re-deriving them from the parsed
-    // number on every keystroke turned "12." into "12.0", so the next digit
-    // produced 12.05, backspace could never remove the ".0", and 0.5 couldn't
-    // be entered at all.
-    var rateText by rememberSaveable {
-        mutableStateOf(if (shift.hourlyRate > 0.0) formatDecimalInput(shift.hourlyRate) else "")
-    }
-    var breakText by rememberSaveable {
-        mutableStateOf(if (shift.breakMinutes > 0) shift.breakMinutes.toString() else "")
-    }
-    var showTimePicker by rememberSaveable { mutableStateOf(false) }
-    var pickingStart by rememberSaveable { mutableStateOf(true) }
-    val color = rememberShiftAccent(draft.colorValue)
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = MaterialTheme.shapes.extraLarge,
-        containerColor = cs.surface,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(11.dp).background(color, CircleShape))
-                Spacer(Modifier.width(10.dp))
-                Text(draft.name, style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
-            }
-        },
-        text = {
-            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TimeChip("Start", draft.startTime, cs, Modifier.weight(1f)) {
-                        pickingStart = true; showTimePicker = true
-                    }
-                    TimeChip("End", draft.endTime, cs, Modifier.weight(1f)) {
-                        pickingStart = false; showTimePicker = true
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = rateText,
-                    onValueChange = {
-                        rateText = it
-                        draft = draft.copy(hourlyRate = parseDecimal(it) ?: 0.0)
-                    },
-                    label = { Text("Hourly rate") },
-                    prefix = { Text(currencySymbol) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true, shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = breakText,
-                    onValueChange = {
-                        breakText = it
-                        draft = draft.copy(breakMinutes = it.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0)
-                    },
-                    label = { Text("Break (minutes)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true, shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = draft.notes,
-                    onValueChange = { draft = draft.copy(notes = it) },
-                    label = { Text("Note") },
-                    shape = MaterialTheme.shapes.small, maxLines = 4,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp)
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onSave(draft) }, shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(containerColor = cs.primary)
-            ) { Text("Save", style = MaterialTheme.typography.labelLarge) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
-
-    if (showTimePicker) {
-        val base = if (pickingStart) draft.startTime else draft.endTime
-        val h = base.substringBefore(":").toIntOrNull() ?: 9
-        val m = base.substringAfter(":").toIntOrNull() ?: 0
-        val state = rememberTimePickerState(h, m, is24Hour = true)
-        AlertDialog(
-            onDismissRequest = { showTimePicker = false },
-            shape = MaterialTheme.shapes.extraLarge,
-            containerColor = cs.surface,
-            text = {
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    TimePicker(state = state)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val t = "%02d:%02d".format(state.hour, state.minute)
-                    draft = if (pickingStart) draft.copy(startTime = t) else draft.copy(endTime = t)
-                    showTimePicker = false
-                }) { Text("OK") }
-            },
-            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } }
-        )
-    }
-}
-
-@Composable
-private fun TimeChip(label: String, value: String, cs: ColorScheme, modifier: Modifier, onClick: () -> Unit) {
-    Column(
-        modifier
-            .clip(MaterialTheme.shapes.medium)
-            .background(cs.surfaceVariant)
-            .clickable(onClick = onClick)
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-        Text(value, style = MaterialTheme.typography.headlineSmall, color = cs.onSurface)
     }
 }
 

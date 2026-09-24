@@ -91,6 +91,12 @@ private fun hoursText(hours: Double): String {
 fun CustomShiftScreen(
     selectedDate: LocalDate?,
     templateIndex: Int? = null,
+    /**
+     * Edits one calendar entry instead of creating a shift: the index within
+     * the active job's shifts on [selectedDate]. Saving replaces only that
+     * entry and leaves the saved-shift library alone.
+     */
+    entryIndex: Int? = null,
     shiftManager: ShiftManager,
     currencyCode: String = "EUR",
     /** The job this shift is being created for; edits keep their own. */
@@ -104,6 +110,8 @@ fun CustomShiftScreen(
 
     // Frozen at entry so the title can't flip while the exit animation runs.
     val frozenTemplateIndex = remember { templateIndex }
+    val frozenEntryIndex = remember { entryIndex }
+    val isEditing = frozenTemplateIndex != null || frozenEntryIndex != null
 
     /**
      * The form stays composed for the whole exit animation, so a text field that
@@ -154,7 +162,7 @@ fun CustomShiftScreen(
     LaunchedEffect(templateIndex, activeProfile.id) {
         if (defaultRateApplied) return@LaunchedEffect
         defaultRateApplied = true
-        if (templateIndex == null && rateText.isBlank() && activeProfile.defaultHourlyRate > 0.0) {
+        if (!isEditing && rateText.isBlank() && activeProfile.defaultHourlyRate > 0.0) {
             rateText = formatRate(activeProfile.defaultHourlyRate)
         }
     }
@@ -167,37 +175,45 @@ fun CustomShiftScreen(
         catch (_: Exception) { currencyCode }
     }
 
-    // Load the shift being edited.
-    LaunchedEffect(templateIndex) {
-        if (editLoaded) return@LaunchedEffect
-        templateIndex?.let { index ->
-            val templates = shiftManager.getTemplates.first()
-            editLoaded = true
-            if (index in templates.indices) {
-                val shift = templates[index].migrated()
-                name = shift.name
-                startTime = shift.startTime
-                endTime = shift.endTime
-                selectedColorValue = shift.colorValue
-                if (!ShiftColors.isPreset(Color(shift.colorValue.toInt()))) {
-                    customColorValue = shift.colorValue
-                }
-                dayType = shift.dayType
-                paidBreak = shift.paidBreak
-                multiplier = if (shift.payMultiplier > 0.0) shift.payMultiplier else 1.0
-                note = shift.notes
-                location = shift.location
-                rateText = if (shift.hourlyRate > 0.0) formatDecimalInput(shift.hourlyRate) else ""
-                bonusText = if (shift.bonus > 0.0) formatDecimalInput(shift.bonus) else ""
-                breakText = if (shift.breakMinutes > 0) shift.breakMinutes.toString() else ""
-                paidLeaveText = if (shift.paidLeaveHours > 0.0) {
-                    if (shift.paidLeaveHours % 1.0 == 0.0) shift.paidLeaveHours.toInt().toString()
-                    else shift.paidLeaveHours.toString()
-                } else "8"
-                carriedIconName = shift.iconName
-                carriedJobId = shift.jobId ?: activeProfile.id
-            }
+    /** Puts a stored shift into the form fields. */
+    fun fill(stored: Shift) {
+        val shift = stored.migrated()
+        name = shift.name
+        startTime = shift.startTime
+        endTime = shift.endTime
+        selectedColorValue = shift.colorValue
+        if (!ShiftColors.isPreset(Color(shift.colorValue.toInt()))) {
+            customColorValue = shift.colorValue
         }
+        dayType = shift.dayType
+        paidBreak = shift.paidBreak
+        multiplier = if (shift.payMultiplier > 0.0) shift.payMultiplier else 1.0
+        note = shift.notes
+        location = shift.location
+        rateText = if (shift.hourlyRate > 0.0) formatDecimalInput(shift.hourlyRate) else ""
+        bonusText = if (shift.bonus > 0.0) formatDecimalInput(shift.bonus) else ""
+        breakText = if (shift.breakMinutes > 0) shift.breakMinutes.toString() else ""
+        paidLeaveText = if (shift.paidLeaveHours > 0.0) {
+            if (shift.paidLeaveHours % 1.0 == 0.0) shift.paidLeaveHours.toInt().toString()
+            else shift.paidLeaveHours.toString()
+        } else "8"
+        carriedIconName = shift.iconName
+        carriedJobId = shift.jobId ?: activeProfile.id
+    }
+
+    // Load the shift being edited: a saved shift, or one day's calendar entry.
+    LaunchedEffect(templateIndex, entryIndex) {
+        if (editLoaded || !isEditing) return@LaunchedEffect
+        val stored = when {
+            frozenEntryIndex != null && selectedDate != null ->
+                ProfileScope.daySlice(shiftManager.getShifts.first(), selectedDate, activeProfile.id)
+                    .getOrNull(frozenEntryIndex)
+            frozenTemplateIndex != null ->
+                shiftManager.getTemplates.first().getOrNull(frozenTemplateIndex)
+            else -> null
+        }
+        editLoaded = true
+        stored?.let(::fill)
     }
 
     val isWorked = dayType == DayType.WORKED
@@ -250,6 +266,18 @@ fun CustomShiftScreen(
             jobId = carriedJobId
         )
         scope.launch {
+            // Editing one calendar entry: replace just that entry, in place.
+            if (frozenEntryIndex != null && selectedDate != null) {
+                shiftManager.updateShifts { map ->
+                    val slice = ProfileScope.daySlice(map, selectedDate, activeProfile.id).toMutableList()
+                    if (frozenEntryIndex in slice.indices) {
+                        slice[frozenEntryIndex] = newShift
+                        ProfileScope.withDaySlice(map, selectedDate, activeProfile.id, slice)
+                    } else map
+                }
+                onSaveFinished()
+                return@launch
+            }
             // Both edits run against the stored data inside one transaction
             // each, so nothing written in the meantime can be overwritten.
             selectedDate?.let { date ->
@@ -301,7 +329,7 @@ fun CustomShiftScreen(
                     .padding(horizontal = 14.dp)
             ) {
                 Text(
-                    if (frozenTemplateIndex == null) "New shift" else "Edit shift",
+                    if (isEditing) "Edit shift" else "New shift",
                     style = MaterialTheme.typography.displayMedium,
                     color = cs.onBackground,
                     maxLines = 1, overflow = TextOverflow.Ellipsis

@@ -6,13 +6,19 @@ sealed class Screen(val route: String) {
     object Templates : Screen("templates")
     object Stats : Screen("stats")
     object Settings : Screen("settings")
-    object CustomShift : Screen("custom_shift/{date}?templateIndex={templateIndex}") {
-        fun createRoute(date: String, templateIndex: Int? = null): String {
-            return if (templateIndex != null) {
-                "custom_shift/$date?templateIndex=$templateIndex"
-            } else {
-                "custom_shift/$date"
+    /**
+     * The shift form. [date] is "none" when editing a saved shift. A
+     * templateIndex edits that saved shift; an entryIndex edits that one
+     * calendar entry (index within the active job's shifts on [date]).
+     */
+    object CustomShift : Screen("custom_shift/{date}?templateIndex={templateIndex}&entryIndex={entryIndex}") {
+        fun createRoute(date: String, templateIndex: Int? = null, entryIndex: Int? = null): String {
+            val params = buildList {
+                templateIndex?.let { add("templateIndex=$it") }
+                entryIndex?.let { add("entryIndex=$it") }
             }
+            return if (params.isEmpty()) "custom_shift/$date"
+            else "custom_shift/$date?" + params.joinToString("&")
         }
     }
 }
