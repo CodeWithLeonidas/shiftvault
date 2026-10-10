@@ -40,7 +40,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +48,7 @@ import com.leonidaskiachidis.shiftvault.ui.theme.AppTheme
 import com.leonidaskiachidis.shiftvault.ui.theme.DarkThemeVariants
 import com.leonidaskiachidis.shiftvault.ui.theme.LightThemeVariants
 import com.leonidaskiachidis.shiftvault.ui.theme.ThemeVariantInfo
+import com.leonidaskiachidis.shiftvault.ui.theme.themeVariantsFor
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 
@@ -68,6 +68,13 @@ fun SettingsScreen(
     onStartOfWeekChange: (String) -> Unit,
     onExportPdf: () -> Unit,
     onExportExcel: () -> Unit,
+    onExportCalendar: () -> Unit = {},
+    restWarnings: Boolean = true,
+    onRestWarningsChange: (Boolean) -> Unit = {},
+    /** Epoch millis of the last backup written, or null if there never was one. */
+    lastBackupAt: Long? = null,
+    /** Whether there is anything worth backing up: an empty app isn't nagged. */
+    hasData: Boolean = false,
     onBackClick: () -> Unit,
     onBackupExport: () -> Unit,
     onBackupImport: () -> Unit,
@@ -124,7 +131,7 @@ fun SettingsScreen(
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull() ?: "—"
     }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberAppSheetState()
     val scope = rememberCoroutineScope()
 
     /**
@@ -144,7 +151,7 @@ fun SettingsScreen(
         catch (_: Exception) { selectedCurrencyCode }
     }
 
-    val variants = if (isDarkTheme) DarkThemeVariants else LightThemeVariants
+    val variants = remember(isDarkTheme, context) { themeVariantsFor(isDarkTheme, context) }
     val variantName = remember(variants, themeVariant) {
         variants.firstOrNull { it.key == themeVariant }?.displayName ?: "Coral"
     }
@@ -173,7 +180,7 @@ fun SettingsScreen(
                 SectionLabel("General")
                 Group {
                     SettingRow(
-                        icon = AppIcons.Payments,
+                        icon = AppIcons.SetCurrency,
                         badgeColor = accents.morning,
                         title = "Currency",
                         subtitle = "Set your default currency",
@@ -181,7 +188,7 @@ fun SettingsScreen(
                     ) { showCurrency = true }
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.CalendarMonth,
+                        icon = AppIcons.SetWeekStart,
                         badgeColor = accent,
                         title = "Week start day",
                         subtitle = "First day of the week in your calendar",
@@ -193,14 +200,14 @@ fun SettingsScreen(
                 SectionLabel("Appearance")
                 Group {
                     ThemeModeRow(
-                        icon = if (isDarkTheme) AppIcons.DarkMode else AppIcons.LightMode,
+                        icon = AppIcons.SetThemeMode,
                         badgeColor = accents.night,
                         mode = themeMode,
                         onChange = onThemeModeChange
                     )
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.Palette,
+                        icon = AppIcons.SetTheme,
                         badgeColor = accents.evening,
                         title = "Theme",
                         subtitle = "Choose your accent palette",
@@ -212,7 +219,7 @@ fun SettingsScreen(
                 SectionLabel("Reminders")
                 Group {
                     ReminderRow(
-                        icon = AppIcons.Schedule,
+                        icon = AppIcons.SetReminderShift,
                         badgeColor = accents.morning,
                         title = "Before each shift",
                         subtitle = if (reminders.shiftEnabled)
@@ -240,7 +247,7 @@ fun SettingsScreen(
                     }
                     RowDivider()
                     ReminderRow(
-                        icon = AppIcons.EventNote,
+                        icon = AppIcons.SetDailyLog,
                         badgeColor = accents.evening,
                         title = "Daily log reminder",
                         subtitle = if (reminders.logEnabled)
@@ -251,20 +258,31 @@ fun SettingsScreen(
                     )
                     if (reminders.logEnabled) {
                         SettingRow(
-                            icon = AppIcons.Schedule,
+                            icon = AppIcons.SetReminderTime,
                             badgeColor = accents.evening,
                             title = "Reminder time",
                             subtitle = null,
                             value = reminders.logTime
                         ) { showLogTimePicker = true }
                     }
+                    RowDivider()
+                    ReminderRow(
+                        icon = AppIcons.Clock,
+                        badgeColor = accents.warning,
+                        title = "Rest warnings",
+                        subtitle = if (restWarnings)
+                            "Marks days with under ${RestCheck.MIN_REST_HOURS}h rest, a 7th day in a row, or a week over ${RestCheck.MAX_WEEK_HOURS.toInt()}h"
+                        else "Off",
+                        checked = restWarnings,
+                        onChange = onRestWarningsChange
+                    )
                 }
 
                 // ── Data ──
                 SectionLabel("Data")
                 Group {
                     SettingRow(
-                        icon = AppIcons.PictureAsPdf,
+                        icon = AppIcons.SetExportPdf,
                         badgeColor = accents.negative,
                         title = "Export to PDF",
                         subtitle = "Pick a period, then save or share",
@@ -273,7 +291,7 @@ fun SettingsScreen(
                     )
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.TableChart,
+                        icon = AppIcons.SetExportExcel,
                         badgeColor = cs.secondary,
                         title = "Export to Excel",
                         subtitle = "A formatted spreadsheet, for any period",
@@ -282,10 +300,23 @@ fun SettingsScreen(
                     )
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.Save,
+                        icon = AppIcons.Calendar,
+                        badgeColor = accents.evening,
+                        title = "Add to your calendar",
+                        subtitle = "Your shifts as an .ics file for Google, Outlook or Samsung Calendar",
+                        value = null,
+                        onClick = onExportCalendar
+                    )
+                    RowDivider()
+                    // Read once per visit to Settings; the day doesn't change while it's open.
+                    val now = remember { System.currentTimeMillis() }
+                    val backupOverdue = hasData && BackupAge.isStale(lastBackupAt, now)
+                    SettingRow(
+                        icon = AppIcons.SetBackup,
                         badgeColor = accents.positive,
                         title = "Back up & restore",
-                        subtitle = "Export your data or restore it",
+                        subtitle = BackupAge.label(lastBackupAt, now),
+                        subtitleColor = if (backupOverdue) accents.warning else null,
                         value = null
                     ) { showBackup = true }
                 }
@@ -294,7 +325,7 @@ fun SettingsScreen(
                 SectionLabel("Other")
                 Group {
                     SettingRow(
-                        icon = AppIcons.Star,
+                        icon = AppIcons.SetRate,
                         badgeColor = accents.night,
                         title = "Rate the app",
                         subtitle = "Share your feedback",
@@ -312,7 +343,7 @@ fun SettingsScreen(
                     }
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.Share,
+                        icon = AppIcons.SetShare,
                         badgeColor = cs.tertiary,
                         title = "Share with friends",
                         subtitle = "Tell others about ShiftVault",
@@ -334,7 +365,7 @@ fun SettingsScreen(
                 SectionLabel("About")
                 Group {
                     SettingRow(
-                        icon = AppIcons.NewReleases,
+                        icon = AppIcons.SetWhatsNew,
                         badgeColor = accents.evening,
                         title = "What's new",
                         subtitle = "Latest updates and features",
@@ -342,7 +373,7 @@ fun SettingsScreen(
                     ) { showWhatsNew = true }
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.PrivacyTip,
+                        icon = AppIcons.SetPrivacy,
                         badgeColor = accents.morning,
                         title = "Privacy policy",
                         subtitle = "How we handle your data",
@@ -350,7 +381,7 @@ fun SettingsScreen(
                     ) { showPrivacy = true }
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.Email,
+                        icon = AppIcons.SetContact,
                         badgeColor = accent,
                         title = "Contact developer",
                         subtitle = "Send feedback or report an issue",
@@ -364,7 +395,7 @@ fun SettingsScreen(
                     }
                     RowDivider()
                     SettingRow(
-                        icon = AppIcons.EditCalendar,
+                        icon = AppIcons.SetAbout,
                         badgeColor = cs.onSurfaceVariant,
                         title = "About Shift Vault",
                         subtitle = "Version $versionName",
@@ -408,13 +439,9 @@ fun SettingsScreen(
             if (query.isBlank()) all
             else all.filter { it.name.startsWith(query, true) || it.code.startsWith(query, true) }
         }
-        ModalBottomSheet(
+        AppBottomSheet(
             onDismissRequest = { showCurrency = false },
-            sheetState = sheetState,
-            containerColor = cs.surface,
-            contentColor = cs.onSurface,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-            dragHandle = { SettingsHandle() }
+            sheetState = sheetState
         ) {
             Column(
                 Modifier
@@ -432,7 +459,7 @@ fun SettingsScreen(
                 )
                 Spacer(Modifier.height(14.dp))
                 LazyColumn(
-                    Modifier.weight(1f).nestedScroll(SheetScrollLock),
+                    Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(filtered, key = { it.code }) { c ->
@@ -490,13 +517,9 @@ fun SettingsScreen(
     //  Week start sheet — grid
     // ══════════════════════════════════════════════════════════
     if (showWeekStart) {
-        ModalBottomSheet(
+        AppBottomSheet(
             onDismissRequest = { showWeekStart = false },
-            sheetState = sheetState,
-            containerColor = cs.surface,
-            contentColor = cs.onSurface,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-            dragHandle = { SettingsHandle() }
+            sheetState = sheetState
         ) {
             Column(
                 Modifier
@@ -533,13 +556,9 @@ fun SettingsScreen(
     //  Theme sheet — grid
     // ══════════════════════════════════════════════════════════
     if (showTheme) {
-        ModalBottomSheet(
+        AppBottomSheet(
             onDismissRequest = { showTheme = false },
-            sheetState = sheetState,
-            containerColor = cs.surface,
-            contentColor = cs.onSurface,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-            dragHandle = { SettingsHandle() }
+            sheetState = sheetState
         ) {
             Column(
                 Modifier
@@ -555,7 +574,6 @@ fun SettingsScreen(
                 Column(
                     Modifier
                         .heightIn(max = 460.dp)
-                        .nestedScroll(SheetScrollLock)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -586,13 +604,9 @@ fun SettingsScreen(
     //  Backup sheet
     // ══════════════════════════════════════════════════════════
     if (showBackup) {
-        ModalBottomSheet(
+        AppBottomSheet(
             onDismissRequest = { showBackup = false },
-            sheetState = sheetState,
-            containerColor = cs.surface,
-            contentColor = cs.onSurface,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-            dragHandle = { SettingsHandle() }
+            sheetState = sheetState
         ) {
             Column(
                 Modifier
@@ -702,9 +716,10 @@ fun SettingsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    WhatsNew("Refreshed design", "A warmer, softer look across every screen.", accent)
-                    WhatsNew("New analytics", "Period deltas, hour distribution and insights.", accent)
-                    WhatsNew("Eight themes", "Pick a palette for light and dark separately.", accent)
+                    WhatsNew("Goals & take-home", "Set an earnings or hours goal per pay period, and see your pay after deductions. Tap the total on Home.", accent)
+                    WhatsNew("Rest warnings", "Days with too little rest, a 7th day in a row or a 48h+ week are marked on the calendar.", accent)
+                    WhatsNew("Add to your calendar", "Export your shifts as a calendar file from Settings or the Export sheet.", accent)
+                    WhatsNew("Wallpaper theme", "On Android 12 and newer, a theme that follows your wallpaper colours.", accent)
                 }
             },
             confirmButton = {
@@ -822,6 +837,8 @@ private fun SettingRow(
     subtitle: String?,
     value: String?,
     showChevron: Boolean = true,
+    /** Overrides the muted subtitle colour, for a line that needs noticing. */
+    subtitleColor: Color? = null,
     onClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -846,7 +863,7 @@ private fun SettingRow(
                 Text(
                     subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = cs.onSurfaceVariant,
+                    color = subtitleColor ?: cs.onSurfaceVariant,
                     maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
             }
@@ -1111,16 +1128,6 @@ private fun ThemeCard(
 //  Sheet pieces
 // ══════════════════════════════════════════════════════════════
 
-@Composable
-private fun SettingsHandle() {
-    val cs = MaterialTheme.colorScheme
-    Box(
-        Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(cs.outline))
-    }
-}
 
 @Composable
 private fun SheetHeading(title: String, caption: String?) {

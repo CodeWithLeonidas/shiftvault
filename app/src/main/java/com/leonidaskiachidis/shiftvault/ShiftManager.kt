@@ -6,12 +6,14 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
@@ -70,6 +72,12 @@ class ShiftManager(private val context: Context) {
     private val REMINDER_LOG_TIME_KEY = stringPreferencesKey("reminder_log_time")
     /** Start of the latest shift already announced, so none is announced twice. */
     private val REMINDER_LAST_ANNOUNCED_KEY = stringPreferencesKey("reminder_last_announced")
+
+    private val REST_WARNINGS_KEY = booleanPreferencesKey("rest_warnings_enabled")
+    /** Epoch millis of the last backup file written successfully. */
+    private val LAST_BACKUP_KEY = longPreferencesKey("last_backup_at")
+    /** Epoch millis the in-app review was asked for; it is only ever asked once. */
+    private val REVIEW_ASKED_KEY = longPreferencesKey("review_asked_at")
 
     // ══════════════════════════════════════════════════════════════
     //  DATABASE ACCESS
@@ -290,6 +298,125 @@ class ShiftManager(private val context: Context) {
     }
 
     // ══════════════════════════════════════════════════════════════
+    //  LEDGER — earnings and the payments received for them
+    //
+    //  Every write re-checks LedgerRules inside its transaction, against the
+    //  stored rows, so a screen showing stale balances can't add a payment to
+    //  an earning that has since been closed. Each returns the problem, or
+    //  null when it was saved.
+    // ══════════════════════════════════════════════════════════════
+
+    val getLedger: Flow<LedgerData> =
+        flow {
+            val dao = db().ledger()
+            emitAll(
+                combine(dao.observeEarnings(), dao.observePayments()) { earnings, payments ->
+                    LedgerData(earnings.map { it.toEarning() }, payments.map { it.toPayment() })
+                }
+            )
+        }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    /** Adds [earning] (id 0) or updates the stored one with its id. */
+    suspend fun saveEarning(earning: Earning): String? = withContext(NonCancellable) {
+        val database = db()
+        val dao = database.ledger()
+        database.withTransaction {
+            val period = runCatching { earning.period }.getOrNull()
+            LedgerRules.earningError(earning.amountCents, period?.start, period?.end, earning.hours)?.let {
+                return@withTransaction it
+            }
+            if (earning.id == 0L) {
+                dao.insertEarning(earning.copy(createdAt = System.currentTimeMillis()).toEntity())
+            } else {
+                val stored = dao.earning(earning.id) ?: return@withTransaction "This earning no longer exists"
+                // The job, creation time and settled flag are the stored ones, whatever the form held.
+                dao.updateEarning(
+                    earning.copy(
+                        jobId = stored.jobId,
+                        createdAt = stored.createdAt,
+                        shortfallAccepted = stored.shortfallAccepted
+                    ).toEntity()
+                )
+            }
+            null
+        }
+    }
+
+    /**
+     * Adds a period's calculated pay — several earnings — all or none, so a
+     * failure part-way never leaves half a period in the ledger.
+     */
+    suspend fun addEarnings(earnings: List<Earning>): String? = withContext(NonCancellable) {
+        val database = db()
+        val dao = database.ledger()
+        database.withTransaction {
+            for (e in earnings) {
+                val period = runCatching { e.period }.getOrNull()
+                LedgerRules.earningError(e.amountCents, period?.start, period?.end, e.hours)?.let {
+                    return@withTransaction it
+                }
+            }
+            val now = System.currentTimeMillis()
+            dao.insertEarningRows(earnings.mapIndexed { i, e -> e.copy(id = 0L, createdAt = now + i).toEntity() })
+            null
+        }
+    }
+
+    /** Closes an earning short of its amount, or reopens it. Payments are untouched. */
+    suspend fun setShortfallAccepted(id: Long, accepted: Boolean) = withContext(NonCancellable) {
+        db().ledger().setShortfallAccepted(id, accepted)
+    }
+
+    /** Deletes an earning together with every payment recorded against it. */
+    suspend fun deleteEarning(id: Long) = withContext(NonCancellable) {
+        db().ledger().deleteEarning(id)
+    }
+
+    suspend fun addPayment(payment: Payment, today: LocalDate = LocalDate.now()): String? = withContext(NonCancellable) {
+        val database = db()
+        val dao = database.ledger()
+        database.withTransaction {
+            val earning = dao.earning(payment.earningId) ?: return@withTransaction "This earning no longer exists"
+            val paid = dao.paidCents(earning.id)
+            val outstanding = if (earning.shortfallAccepted || paid >= earning.amountCents) 0L
+            else earning.amountCents - paid
+            val date = runCatching { payment.day }.getOrNull()
+            LedgerRules.paymentError(payment.amountCents, outstanding, date, today, payment.hoursPaid)?.let {
+                return@withTransaction it
+            }
+            dao.insertPayment(payment.copy(id = 0L, createdAt = System.currentTimeMillis()).toEntity())
+            null
+        }
+    }
+
+    suspend fun deletePayment(id: Long) = withContext(NonCancellable) {
+        db().ledger().deletePayment(id)
+    }
+
+    // --- REST WARNINGS ---
+    val getRestWarnings: Flow<Boolean> = context.dataStore.data.map { it[REST_WARNINGS_KEY] ?: true }
+
+    suspend fun saveRestWarnings(enabled: Boolean) {
+        context.dataStore.edit { it[REST_WARNINGS_KEY] = enabled }
+    }
+
+    // --- BACKUP AGE ---
+    val getLastBackupAt: Flow<Long?> = context.dataStore.data.map { it[LAST_BACKUP_KEY] }
+
+    suspend fun saveLastBackupAt(millis: Long) {
+        context.dataStore.edit { it[LAST_BACKUP_KEY] = millis }
+    }
+
+    // --- IN-APP REVIEW ---
+    suspend fun reviewAskedAt(): Long? = context.dataStore.data.first()[REVIEW_ASKED_KEY]
+
+    suspend fun saveReviewAskedAt(millis: Long) {
+        context.dataStore.edit { it[REVIEW_ASKED_KEY] = millis }
+    }
+
+    // ══════════════════════════════════════════════════════════════
     //  REMINDERS
     // ══════════════════════════════════════════════════════════════
 
@@ -389,6 +516,8 @@ class ShiftManager(private val context: Context) {
             database.withTransaction {
                 database.dao().deleteCalendarForJob(id)
                 database.dao().deleteSavedForJob(id)
+                database.ledger().deletePaymentsForJob(id)
+                database.ledger().deleteEarningsForJob(id)
             }
         }
         Reminders.requestReschedule(context)
@@ -464,6 +593,7 @@ class ShiftManager(private val context: Context) {
      */
     suspend fun getAllDataForBackup(): BackupData {
         val dao = db().dao()
+        val ledger = db().ledger()
         val shifts = dao.calendar().toShiftMap().mapKeys { it.key.toString() }
         val templates = dao.saved().map { it.shift.toShift() }
 
@@ -475,7 +605,10 @@ class ShiftManager(private val context: Context) {
             shifts = shifts,
             templates = templates,
             profiles = profiles,
-            activeProfileId = preferences[ACTIVE_PROFILE_KEY] ?: profiles.first().id
+            activeProfileId = preferences[ACTIVE_PROFILE_KEY] ?: profiles.first().id,
+            ledgerIncluded = true,
+            earnings = ledger.earnings().map { it.toEarning() },
+            payments = ledger.payments().map { it.toPayment() }
         )
     }
 
@@ -500,6 +633,19 @@ class ShiftManager(private val context: Context) {
                     backupData.shifts.flatMap { (date, list) -> calendarRows(LocalDate.parse(date), list) }
                 )
                 dao.insertSaved(savedRows(backupData.templates))
+
+                // A backup from before the ledger existed says nothing about
+                // it, so the ledger on the phone is kept rather than wiped.
+                if (backupData.ledgerIncluded) {
+                    val ledger = database.ledger()
+                    ledger.clearPayments()
+                    ledger.clearEarnings()
+                    ledger.insertEarnings(backupData.earnings.map { it.toEntity() })
+                    val ids = backupData.earnings.mapTo(HashSet()) { it.id }
+                    ledger.insertPayments(
+                        backupData.payments.filter { it.earningId in ids }.map { it.toEntity() }
+                    )
+                }
             }
 
             context.dataStore.edit { preferences ->

@@ -18,6 +18,8 @@ package com.leonidaskiachidis.shiftvault
  */
 
 import android.content.Context
+import androidx.room.AutoMigration
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Embedded
@@ -29,6 +31,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 
@@ -91,6 +95,42 @@ data class MetaEntity(
     val value: String
 )
 
+/**
+ * Money owed for work (see Ledger.kt). [type] is an EarningType by name;
+ * dates are ISO-8601, so text order is date order; amounts are whole cents.
+ */
+@Entity(tableName = "earnings", indices = [Index("jobId")])
+data class EarningEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val jobId: String,
+    val type: String,
+    val description: String,
+    val amountCents: Long,
+    val periodStart: String,
+    val periodEnd: String,
+    val createdAt: Long,
+    /** Added in version 3: hours the amount is for; null when not known. */
+    val hours: Double? = null,
+    /** Added in version 3: a shortfall the user accepted, closing the earning. */
+    @ColumnInfo(defaultValue = "0") val shortfallAccepted: Boolean = false
+)
+
+/**
+ * Money received towards one earning. No foreign key: deleting an earning
+ * deletes its payments explicitly, in the same transaction (LedgerDao).
+ */
+@Entity(tableName = "payments", indices = [Index("earningId")])
+data class PaymentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val earningId: Long,
+    val amountCents: Long,
+    val date: String,
+    val note: String,
+    val createdAt: Long,
+    /** Added in version 3: hours of work the payment covers; null when not recorded. */
+    val hoursPaid: Double? = null
+)
+
 // ══════════════════════════════════════════════════════════════
 //  Queries
 // ══════════════════════════════════════════════════════════════
@@ -144,23 +184,104 @@ interface ShiftDao {
     suspend fun putMeta(row: MetaEntity)
 }
 
+@Dao
+interface LedgerDao {
+
+    @Query("SELECT * FROM earnings")
+    fun observeEarnings(): Flow<List<EarningEntity>>
+
+    @Query("SELECT * FROM payments")
+    fun observePayments(): Flow<List<PaymentEntity>>
+
+    @Query("SELECT * FROM earnings")
+    suspend fun earnings(): List<EarningEntity>
+
+    @Query("SELECT * FROM payments")
+    suspend fun payments(): List<PaymentEntity>
+
+    @Query("SELECT * FROM earnings WHERE id = :id")
+    suspend fun earning(id: Long): EarningEntity?
+
+    /** Everything received so far towards one earning. */
+    @Query("SELECT COALESCE(SUM(amountCents), 0) FROM payments WHERE earningId = :earningId")
+    suspend fun paidCents(earningId: Long): Long
+
+    @Insert
+    suspend fun insertEarning(row: EarningEntity): Long
+
+    @Update
+    suspend fun updateEarning(row: EarningEntity)
+
+    @Insert
+    suspend fun insertEarningRows(rows: List<EarningEntity>)
+
+    @Query("UPDATE earnings SET shortfallAccepted = :accepted WHERE id = :id")
+    suspend fun setShortfallAccepted(id: Long, accepted: Boolean)
+
+    @Insert
+    suspend fun insertPayment(row: PaymentEntity): Long
+
+    @Query("DELETE FROM payments WHERE id = :id")
+    suspend fun deletePayment(id: Long)
+
+    @Query("DELETE FROM payments WHERE earningId = :earningId")
+    suspend fun deletePaymentsFor(earningId: Long)
+
+    @Query("DELETE FROM earnings WHERE id = :id")
+    suspend fun deleteEarningRow(id: Long)
+
+    /** An earning and its payments go together, or not at all. */
+    @Transaction
+    suspend fun deleteEarning(id: Long) {
+        deletePaymentsFor(id)
+        deleteEarningRow(id)
+    }
+
+    @Query("DELETE FROM payments WHERE earningId IN (SELECT id FROM earnings WHERE jobId = :jobId)")
+    suspend fun deletePaymentsForJob(jobId: String)
+
+    @Query("DELETE FROM earnings WHERE jobId = :jobId")
+    suspend fun deleteEarningsForJob(jobId: String)
+
+    @Query("DELETE FROM earnings")
+    suspend fun clearEarnings()
+
+    @Query("DELETE FROM payments")
+    suspend fun clearPayments()
+
+    @Insert
+    suspend fun insertEarnings(rows: List<EarningEntity>)
+
+    @Insert
+    suspend fun insertPayments(rows: List<PaymentEntity>)
+}
+
 // ══════════════════════════════════════════════════════════════
 //  Database
 // ══════════════════════════════════════════════════════════════
 
 /**
- * Version 1. Any change to the tables above needs a version bump and a
- * Migration — the exported schema in app/schemas is what that is checked
- * against. Never use fallbackToDestructiveMigration here: it deletes the
- * user's shifts.
+ * Version 2 added the earnings and payments tables, and version 3 added hours
+ * to both plus the accepted-shortfall flag — new tables and new columns only,
+ * so Room's automatic migrations carry older versions over with every row
+ * intact.
+ *
+ * Any change to the tables above needs a version bump and a migration — the
+ * exported schemas in app/schemas are what those are checked against. Never
+ * use fallbackToDestructiveMigration here: it deletes the user's data.
  */
 @Database(
-    entities = [CalendarShiftEntity::class, SavedShiftEntity::class, MetaEntity::class],
-    version = 1,
-    exportSchema = true
+    entities = [
+        CalendarShiftEntity::class, SavedShiftEntity::class, MetaEntity::class,
+        EarningEntity::class, PaymentEntity::class
+    ],
+    version = 3,
+    exportSchema = true,
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)]
 )
 abstract class ShiftDatabase : RoomDatabase() {
     abstract fun dao(): ShiftDao
+    abstract fun ledger(): LedgerDao
 
     companion object {
         /** Set once the shifts stored in DataStore have been copied in. */
@@ -239,3 +360,28 @@ internal fun changedDays(
     new: Map<LocalDate, List<Shift>>
 ): Set<LocalDate> =
     (old.keys + new.keys).filterTo(HashSet()) { old[it].orEmpty() != new[it].orEmpty() }
+
+internal fun Earning.toEntity() = EarningEntity(
+    id = id, jobId = jobId, type = type.name, description = description.trim(),
+    amountCents = amountCents, periodStart = periodStart, periodEnd = periodEnd, createdAt = createdAt,
+    hours = hours, shortfallAccepted = shortfallAccepted
+)
+
+/** A type this build doesn't know (written by a newer one) reads as "Other work". */
+internal fun EarningEntity.toEarning() = Earning(
+    id = id, jobId = jobId,
+    type = EarningType.entries.firstOrNull { it.name == type } ?: EarningType.OTHER,
+    description = description, amountCents = amountCents,
+    periodStart = periodStart, periodEnd = periodEnd, createdAt = createdAt,
+    hours = hours, shortfallAccepted = shortfallAccepted
+)
+
+internal fun Payment.toEntity() = PaymentEntity(
+    id = id, earningId = earningId, amountCents = amountCents, date = date, note = note.trim(),
+    createdAt = createdAt, hoursPaid = hoursPaid
+)
+
+internal fun PaymentEntity.toPayment() = Payment(
+    id = id, earningId = earningId, amountCents = amountCents, date = date, note = note,
+    createdAt = createdAt, hoursPaid = hoursPaid
+)

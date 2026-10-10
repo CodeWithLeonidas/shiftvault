@@ -49,7 +49,12 @@ data class ReportMeta(
      * The period the report was asked to cover ("15 Sep – 14 Oct 2026"), or
      * null for everything recorded — then the range is read off the data.
      */
-    val periodLabel: String? = null
+    val periodLabel: String? = null,
+    /**
+     * Set for a salaried job: its pay isn't the sum of its shifts, so the
+     * report's money totals come from the same period calculation as the app.
+     */
+    val pay: PeriodPay? = null
 ) {
     val currencySymbol: String
         get() = try {
@@ -395,7 +400,8 @@ object ExportHelper {
 
                     drawKpiCards(
                         canvas, kpiTop, kpiH, totals, symbol,
-                        fillCard, lineOutline, pKpiLabel, pKpiValue
+                        fillCard, lineOutline, pKpiLabel, pKpiValue,
+                        pay = meta.pay
                     )
 
                     if (showChart) {
@@ -500,9 +506,15 @@ object ExportHelper {
         fillCard: Paint,
         outline: Paint,
         label: Paint,
-        value: Paint
+        value: Paint,
+        pay: PeriodPay? = null
     ) {
-        val cards = listOf(
+        val cards = if (pay != null) listOf(
+            "SHIFTS WORKED" to totals.shiftsWorked.toString(),
+            "HOURS WORKED" to "${num(pay.hoursWorked, 1)} h",
+            "BASE SALARY" to formatCents(pay.baseCents, symbol),
+            "TOTAL EXPECTED" to formatCents(pay.expectedCents, symbol)
+        ) else listOf(
             "SHIFTS WORKED" to totals.shiftsWorked.toString(),
             "PAID HOURS" to "${num(totals.hours, 1)} h",
             "AVG RATE" to "$symbol${num(totals.averageRate)}",
@@ -841,10 +853,21 @@ object ExportHelper {
                 .number(1, value, s.body(format, bold = emphasise, align = XlsxAlign.RIGHT, fill = fill))
         }
         kpi("Shifts worked", totals.shiftsWorked.toDouble(), s.whole)
-        kpi("Paid hours", totals.hours, s.hours)
-        kpi("Average effective rate", totals.averageRate, s.money)
-        kpi("Bonuses", totals.bonuses, s.money)
-        kpi("Total earnings", totals.earnings, s.money, emphasise = true)
+        val pay = meta.pay
+        if (pay != null) {
+            // A salary: the totals come from the period, not from the shifts.
+            kpi("Hours worked", pay.hoursWorked, s.hours)
+            kpi("Base salary", pay.baseCents / 100.0, s.money)
+            if (pay.overtimeHours > 0.0) kpi("Overtime hours", pay.overtimeHours, s.hours)
+            pay.overtimeCents?.takeIf { it > 0L }?.let { kpi("Overtime pay", it / 100.0, s.money) }
+            kpi("Bonuses", pay.extrasCents / 100.0, s.money)
+            kpi("Total expected", pay.expectedCents / 100.0, s.money, emphasise = true)
+        } else {
+            kpi("Paid hours", totals.hours, s.hours)
+            kpi("Average effective rate", totals.averageRate, s.money)
+            kpi("Bonuses", totals.bonuses, s.money)
+            kpi("Total earnings", totals.earnings, s.money, emphasise = true)
+        }
         r++
 
         // ── By month ──

@@ -4,7 +4,8 @@ sealed class Screen(val route: String) {
     object Splash : Screen("splash")
     object Vault : Screen("vault")
     object Templates : Screen("templates")
-    object Stats : Screen("stats")
+    /** Earnings, payments and the shift analytics (formerly "Analytics"). */
+    object Wallet : Screen("wallet")
     object Settings : Screen("settings")
     /**
      * The shift form. [date] is "none" when editing a saved shift. A

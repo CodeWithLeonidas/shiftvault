@@ -23,6 +23,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -35,7 +36,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -200,7 +200,6 @@ fun ProfileChip(
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
-    val dot = rememberShiftAccent(profile.colorValue)
 
     Surface(
         onClick = onClick,
@@ -211,11 +210,11 @@ fun ProfileChip(
         shadowElevation = 0.dp
     ) {
         Row(
-            modifier = Modifier.padding(start = 14.dp, end = 12.dp, top = 11.dp, bottom = 11.dp),
+            modifier = Modifier.padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.size(9.dp).clip(CircleShape).background(dot))
-            Spacer(Modifier.width(9.dp))
+            ShiftIcon(profile.name, profile.iconName, profile.colorValue, size = 28.dp)
+            Spacer(Modifier.width(8.dp))
             Text(
                 profile.name,
                 style = MaterialTheme.typography.labelLarge,
@@ -248,7 +247,7 @@ fun ProfileSwitcherSheet(
     profiles: List<JobProfile>,
     activeId: String,
     summaries: Map<String, ProfileSummary>,
-    sheetState: SheetState,
+    sheetState: AppSheetState,
     onSelect: (String) -> Unit,
     onEdit: (JobProfile) -> Unit,
     onCreate: () -> Unit,
@@ -265,7 +264,6 @@ fun ProfileSwitcherSheet(
         Column(
             Modifier
                 .heightIn(max = 400.dp)
-                .nestedScroll(SheetScrollLock)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -315,11 +313,11 @@ private fun ProfileRow(
                 shape = MaterialTheme.shapes.large
             )
             .clickable(onClick = onClick)
-            .padding(start = 16.dp, end = 10.dp, top = 13.dp, bottom = 13.dp),
+            .padding(start = 12.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(11.dp).clip(CircleShape).background(accent))
-        Spacer(Modifier.width(13.dp))
+        ShiftIcon(profile.name, profile.iconName, profile.colorValue, size = 40.dp)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 profile.name,
@@ -428,7 +426,7 @@ fun ProfileEditorSheet(
     /** Null creates a new profile; non-null edits that one. */
     editing: JobProfile?,
     currencySymbol: String,
-    sheetState: SheetState,
+    sheetState: AppSheetState,
     /** False for the last remaining profile — the app is always on some job. */
     canDelete: Boolean,
     onSave: (JobProfile) -> Unit,
@@ -442,12 +440,54 @@ fun ProfileEditorSheet(
     var colorValue by rememberSaveable(editing) {
         mutableStateOf(editing?.colorValue ?: suggestedProfileColor())
     }
+    var iconName by rememberSaveable(editing) { mutableStateOf(editing?.iconName) }
+    // Kept once used, so trying a preset and coming back doesn't lose it.
+    var customColor by rememberSaveable(editing) {
+        mutableStateOf(editing?.colorValue?.takeIf { !ShiftColors.isPreset(Color(it.toInt())) })
+    }
+    var showCustomColor by rememberSaveable { mutableStateOf(false) }
+    var showIconPicker by rememberSaveable { mutableStateOf(false) }
     var rateText by rememberSaveable(editing) {
         mutableStateOf(
             editing?.defaultHourlyRate?.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: ""
         )
     }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    // Goals and the take-home estimate. Blank means "not set" (stored as 0).
+    var earningsGoalText by rememberSaveable(editing) {
+        mutableStateOf(editing?.earningsGoal?.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: "")
+    }
+    var hoursGoalText by rememberSaveable(editing) {
+        mutableStateOf(editing?.hoursGoal?.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: "")
+    }
+    var deductionText by rememberSaveable(editing) {
+        mutableStateOf(editing?.deductionPercent?.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: "")
+    }
+
+    // How the job pays. Blank number fields mean "not set" (stored as 0).
+    val initialPay = editing?.pay ?: PaySetup()
+    var payMode by rememberSaveable(editing) { mutableStateOf(initialPay.mode) }
+    var salaryHistory by rememberSaveable(editing, stateSaver = jsonSaver<List<SalaryRate>>()) {
+        mutableStateOf(initialPay.salaryHistory)
+    }
+    var firstSalaryText by rememberSaveable(editing) { mutableStateOf("") }
+    var referenceRateText by rememberSaveable(editing) {
+        mutableStateOf(initialPay.referenceHourlyRate.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: "")
+    }
+    var contractHoursText by rememberSaveable(editing) {
+        mutableStateOf(initialPay.contractHoursPerWeek.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: "")
+    }
+    var overtimeSource by rememberSaveable(editing) { mutableStateOf(initialPay.overtimeSource) }
+    var dailyLimitText by rememberSaveable(editing) {
+        mutableStateOf(initialPay.dailyLimitHours.takeIf { it > 0.0 }?.let(::formatDecimalInput) ?: "")
+    }
+    var overtimeMultiplier by rememberSaveable(editing) { mutableDoubleStateOf(initialPay.overtimeMultiplier) }
+    var overtimeCompensation by rememberSaveable(editing) { mutableStateOf(initialPay.overtimeCompensation) }
+    val isFixed = payMode == PayMode.FIXED_MONTHLY
+    // A salary typed for a profile that had none yet becomes its starting salary.
+    val effectiveHistory = salaryHistory.ifEmpty {
+        parseCents(firstSalaryText)?.takeIf { it > 0L }?.let { listOf(SalaryRate(null, it)) } ?: emptyList()
+    }
 
     // Pay period, field by field so each survives rotation on its own.
     val initialPeriod = editing?.payPeriod ?: PayPeriod()
@@ -458,7 +498,8 @@ fun ProfileEditorSheet(
     var showAnchorPicker by rememberSaveable { mutableStateOf(false) }
     val payPeriod = PayPeriod(payCycle, payStartDay, payWeekStart, payAnchor)
 
-    val canSave = name.isNotBlank()
+    // A salaried job needs its salary; everything else is optional.
+    val canSave = name.isNotBlank() && (!isFixed || effectiveHistory.isNotEmpty())
 
     AppSheet(
         onDismiss = onDismiss,
@@ -472,7 +513,6 @@ fun ProfileEditorSheet(
         Column(
             Modifier
                 .imePadding()
-                .nestedScroll(SheetScrollLock)
                 .verticalScroll(rememberScrollState())
         ) {
             Spacer(Modifier.height(20.dp))
@@ -485,33 +525,79 @@ fun ProfileEditorSheet(
                 placeholder = "e.g. Restaurant",
                 singleLine = true
             )
-
-            Spacer(Modifier.height(20.dp))
-            FieldLabel("Colour")
             Spacer(Modifier.height(12.dp))
-            ProfileColorRow(selected = colorValue, onSelect = { colorValue = it })
+            IconField(
+                name = name,
+                iconName = iconName,
+                colorValue = colorValue,
+                onClick = { showIconPicker = true }
+            )
 
             Spacer(Modifier.height(20.dp))
-            FieldLabel("Default hourly rate", optional = true)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Prefills the rate on new shifts created for this job.",
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant
+            FieldLabel("Color")
+            Spacer(Modifier.height(12.dp))
+            ColorPicker(
+                selected = colorValue,
+                custom = customColor,
+                onSelect = { colorValue = it },
+                onCustom = { showCustomColor = true }
             )
+
+            Spacer(Modifier.height(20.dp))
+            FieldLabel("How you're paid")
             Spacer(Modifier.height(10.dp))
-            FormTextField(
-                value = rateText,
-                onValueChange = { rateText = it },
-                placeholder = "0.00",
-                singleLine = true,
-                keyboardType = KeyboardType.Decimal,
-                prefix = currencySymbol
+            SegmentedControl(
+                options = PayMode.entries.map { it to it.label },
+                selected = payMode,
+                onSelect = { mode ->
+                    payMode = mode
+                    // A monthly salary is paid per month.
+                    if (mode == PayMode.FIXED_MONTHLY) payCycle = PayCycle.MONTHLY
+                }
             )
+
+            if (isFixed) {
+                Spacer(Modifier.height(20.dp))
+                SalarySection(
+                    history = salaryHistory,
+                    payPeriod = PayPeriod(PayCycle.MONTHLY, payStartDay, payWeekStart, payAnchor),
+                    currencySymbol = currencySymbol,
+                    firstSalaryText = firstSalaryText,
+                    onFirstSalaryText = { firstSalaryText = it },
+                    onSetSalary = { from, cents ->
+                        salaryHistory = PaySetup(salaryHistory = effectiveHistory).withSalary(from, cents).salaryHistory
+                        firstSalaryText = ""
+                    },
+                    onRemove = { rate -> salaryHistory = salaryHistory - rate },
+                    referenceRateText = referenceRateText,
+                    onReferenceRate = { referenceRateText = it },
+                    contractHoursText = contractHoursText,
+                    onContractHours = { contractHoursText = it }
+                )
+            } else {
+                Spacer(Modifier.height(20.dp))
+                FieldLabel("Default hourly rate", optional = true)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Prefills the rate on new shifts created for this job. Each shift can have its own.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                FormTextField(
+                    value = rateText,
+                    onValueChange = { rateText = it },
+                    placeholder = "0.00",
+                    singleLine = true,
+                    keyboardType = KeyboardType.Decimal,
+                    prefix = currencySymbol
+                )
+            }
 
             Spacer(Modifier.height(20.dp))
             PayPeriodEditor(
                 period = payPeriod,
+                monthlyOnly = isFixed,
                 onCycle = { cycle ->
                     // A fresh bi-weekly cycle starts this week, which is the
                     // likeliest truth and easy to move.
@@ -527,6 +613,72 @@ fun ProfileEditorSheet(
                 onPickAnchor = { showAnchorPicker = true }
             )
 
+            Spacer(Modifier.height(20.dp))
+            OvertimeSection(
+                isFixed = isFixed,
+                source = overtimeSource,
+                onSource = { overtimeSource = it },
+                contractHoursText = contractHoursText,
+                onContractHours = { contractHoursText = it },
+                dailyLimitText = dailyLimitText,
+                onDailyLimit = { dailyLimitText = it },
+                multiplier = overtimeMultiplier,
+                onMultiplier = { overtimeMultiplier = it },
+                compensation = overtimeCompensation,
+                onCompensation = { overtimeCompensation = it },
+                hasReferenceRate = (parseDecimal(referenceRateText) ?: 0.0) > 0.0
+            )
+
+            Spacer(Modifier.height(20.dp))
+            FieldLabel("Goals per pay period", optional = true)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Home shows how far along each pay period is.",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f)) {
+                    FormTextField(
+                        value = earningsGoalText,
+                        onValueChange = { earningsGoalText = it },
+                        placeholder = "Earnings",
+                        singleLine = true,
+                        keyboardType = KeyboardType.Decimal,
+                        prefix = currencySymbol
+                    )
+                }
+                Box(Modifier.weight(1f)) {
+                    FormTextField(
+                        value = hoursGoalText,
+                        onValueChange = { hoursGoalText = it },
+                        placeholder = "Hours",
+                        singleLine = true,
+                        keyboardType = KeyboardType.Decimal,
+                        suffix = "h"
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            FieldLabel("Deductions", optional = true)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Tax and insurance, roughly. Only used to estimate your take-home pay.",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant
+            )
+            Spacer(Modifier.height(10.dp))
+            FormTextField(
+                value = deductionText,
+                onValueChange = { deductionText = it },
+                placeholder = "0",
+                singleLine = true,
+                keyboardType = KeyboardType.Decimal,
+                suffix = "%"
+            )
+
             Spacer(Modifier.height(22.dp))
             Surface(
                 onClick = {
@@ -540,8 +692,22 @@ fun ProfileEditorSheet(
                         )).copy(
                             name = name.trim(),
                             colorValue = colorValue,
+                            iconName = iconName,
                             defaultHourlyRate = parseDecimal(rateText) ?: 0.0,
-                            payPeriod = payPeriod
+                            payPeriod = payPeriod,
+                            earningsGoal = parseDecimal(earningsGoalText) ?: 0.0,
+                            hoursGoal = parseDecimal(hoursGoalText) ?: 0.0,
+                            deductionPercent = (parseDecimal(deductionText) ?: 0.0).coerceAtMost(100.0),
+                            pay = PaySetup(
+                                mode = payMode,
+                                salaryHistory = effectiveHistory,
+                                referenceHourlyRate = parseDecimal(referenceRateText) ?: 0.0,
+                                contractHoursPerWeek = (parseDecimal(contractHoursText) ?: 0.0).coerceAtMost(168.0),
+                                overtimeSource = overtimeSource,
+                                dailyLimitHours = (parseDecimal(dailyLimitText) ?: 0.0).coerceAtMost(24.0),
+                                overtimeMultiplier = overtimeMultiplier,
+                                overtimeCompensation = overtimeCompensation
+                            )
                         )
                     )
                 },
@@ -578,6 +744,32 @@ fun ProfileEditorSheet(
                 }
             }
         }
+    }
+
+    if (showCustomColor) {
+        CustomColorSheet(
+            initial = Color((customColor ?: colorValue).toInt()),
+            previewName = name,
+            previewIcon = iconName,
+            onDismiss = { showCustomColor = false },
+            onPick = {
+                val value = it.toArgb().toLong()
+                colorValue = value
+                customColor = value
+                showCustomColor = false
+            }
+        )
+    }
+
+    if (showIconPicker) {
+        IconPickerSheet(
+            name = name,
+            colorValue = colorValue,
+            selected = iconName,
+            sections = ShiftIconCatalog.forJobs,
+            onPick = { iconName = it; showIconPicker = false },
+            onDismiss = { showIconPicker = false }
+        )
     }
 
     if (showAnchorPicker) {
@@ -641,6 +833,8 @@ fun ProfileEditorSheet(
 @Composable
 private fun PayPeriodEditor(
     period: PayPeriod,
+    /** A monthly salary is paid per month: no weekly cycles to pick from. */
+    monthlyOnly: Boolean = false,
     onCycle: (PayCycle) -> Unit,
     onStartDay: (Int) -> Unit,
     onWeekStart: (Int) -> Unit,
@@ -650,21 +844,24 @@ private fun PayPeriodEditor(
     FieldLabel("Pay period")
     Spacer(Modifier.height(6.dp))
     Text(
-        "The stretch one payslip covers. Home totals, Analytics and exports use it.",
+        if (monthlyOnly) "The month one payslip covers. It can start on any day."
+        else "The stretch one payslip covers. Home totals, the Wallet and exports use it.",
         style = MaterialTheme.typography.bodySmall,
         color = cs.onSurfaceVariant
     )
     Spacer(Modifier.height(12.dp))
-    SegmentedControl(
-        options = listOf(
-            PayCycle.MONTHLY to "Monthly",
-            PayCycle.WEEKLY to "Weekly",
-            PayCycle.BIWEEKLY to "Every 2 wks"
-        ),
-        selected = period.cycle,
-        onSelect = onCycle
-    )
-    Spacer(Modifier.height(12.dp))
+    if (!monthlyOnly) {
+        SegmentedControl(
+            options = listOf(
+                PayCycle.MONTHLY to "Monthly",
+                PayCycle.WEEKLY to "Weekly",
+                PayCycle.BIWEEKLY to "Every 2 wks"
+            ),
+            selected = period.cycle,
+            onSelect = onCycle
+        )
+        Spacer(Modifier.height(12.dp))
+    }
 
     when (period.cycle) {
         PayCycle.MONTHLY -> Row(
@@ -745,7 +942,7 @@ private fun PayPeriodEditor(
                     color = cs.onSurface
                 )
             }
-            Icon(AppIcons.EditCalendar, null, tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            Icon(AppIcons.Calendar, null, tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp))
         }
     }
 
@@ -757,48 +954,349 @@ private fun PayPeriodEditor(
     )
 }
 
-/** Presets only — a job is a label, so the full custom picker isn't warranted. */
+/**
+ * The salary and what goes with it. The salary is kept as a history: a change
+ * applies from a chosen pay period on, and earlier periods keep what they
+ * were paid. The starting salary can be corrected for all months instead.
+ */
 @Composable
-private fun ProfileColorRow(selected: Long, onSelect: (Long) -> Unit) {
-    val rows = remember { ShiftColors.Palette.chunked(7) }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        rows.forEach { row ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                row.forEach { c ->
-                    val value = c.toArgb().toLong()
-                    ProfileSwatch(
-                        color = c,
-                        isSelected = value == selected,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onSelect(value) }
-                    )
+private fun SalarySection(
+    history: List<SalaryRate>,
+    payPeriod: PayPeriod,
+    currencySymbol: String,
+    firstSalaryText: String,
+    onFirstSalaryText: (String) -> Unit,
+    onSetSalary: (from: LocalDate?, cents: Long) -> Unit,
+    onRemove: (SalaryRate) -> Unit,
+    referenceRateText: String,
+    onReferenceRate: (String) -> Unit,
+    contractHoursText: String,
+    onContractHours: (String) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val money = { cents: Long -> formatCents(cents, currencySymbol) }
+    val salaries = PaySetup(salaryHistory = history).salaries
+
+    FieldLabel("Monthly salary")
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "The same every month, whatever the number of working days. Hours are still counted from your shifts.",
+        style = MaterialTheme.typography.bodySmall,
+        color = cs.onSurfaceVariant
+    )
+    Spacer(Modifier.height(10.dp))
+
+    if (salaries.isEmpty()) {
+        FormTextField(
+            value = firstSalaryText,
+            onValueChange = onFirstSalaryText,
+            placeholder = "0.00",
+            singleLine = true,
+            keyboardType = KeyboardType.Decimal,
+            prefix = currencySymbol,
+            suffix = "/month"
+        )
+    } else {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.medium)
+                .background(cs.background)
+                .border(1.dp, cs.outline, MaterialTheme.shapes.medium)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        ) {
+            salaries.asReversed().forEachIndexed { i, rate ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "${money(rate.monthlyCents)} a month",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (i == 0) cs.onSurface else cs.onSurfaceVariant
+                        )
+                        Text(
+                            rate.from?.let { "From " + payPeriod.periodContaining(LocalDate.parse(it)).label() }
+                                ?: "From the start",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant
+                        )
+                    }
+                    if (rate.from != null) {
+                        CircleIconButton(
+                            icon = AppIcons.Close, contentDescription = "Remove this salary change",
+                            onClick = { onRemove(rate) },
+                            diameter = 32.dp, iconSize = 14.dp, container = cs.surfaceVariant, elevation = 0.dp
+                        )
+                    }
                 }
-                repeat(7 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        SalaryChange(payPeriod, currencySymbol, onSetSalary)
+    }
+
+    Spacer(Modifier.height(20.dp))
+    FieldLabel("Contracted hours per week", optional = true)
+    Spacer(Modifier.height(10.dp))
+    FormTextField(
+        value = contractHoursText,
+        onValueChange = onContractHours,
+        placeholder = "e.g. 40",
+        singleLine = true,
+        keyboardType = KeyboardType.Decimal,
+        suffix = "h/week"
+    )
+
+    Spacer(Modifier.height(20.dp))
+    FieldLabel("Reference hourly rate", optional = true)
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "Only used to put a value on overtime. Your salary is never divided by the hours you worked.",
+        style = MaterialTheme.typography.bodySmall,
+        color = cs.onSurfaceVariant
+    )
+    Spacer(Modifier.height(10.dp))
+    FormTextField(
+        value = referenceRateText,
+        onValueChange = onReferenceRate,
+        placeholder = "0.00",
+        singleLine = true,
+        keyboardType = KeyboardType.Decimal,
+        prefix = currencySymbol,
+        suffix = "/hr"
+    )
+    val salaryNow = salaries.lastOrNull()?.monthlyCents ?: parseCents(firstSalaryText)
+    val implied = salaryNow?.let {
+        PaySetup(
+            salaryHistory = listOf(SalaryRate(null, it)),
+            contractHoursPerWeek = parseDecimal(contractHoursText) ?: 0.0
+        ).contractHourlyRate()
+    }
+    if (implied != null) {
+        val impliedText = "%.2f".format(java.util.Locale.ROOT, implied)
+        if (parseDecimal(referenceRateText)?.let { "%.2f".format(java.util.Locale.ROOT, it) } != impliedText) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "From your contract: ${money(Math.round(implied * 100))}/hr (a year\u2019s salary over a year\u2019s contracted hours)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                TextTab(text = "Use", selected = false, onClick = { onReferenceRate(impliedText) })
             }
         }
     }
 }
 
+/** "Change salary": a new amount, from a pay period on — or a correction of the starting salary. */
 @Composable
-private fun ProfileSwatch(
-    color: Color,
-    isSelected: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit
+private fun SalaryChange(
+    payPeriod: PayPeriod,
+    currencySymbol: String,
+    onSetSalary: (from: LocalDate?, cents: Long) -> Unit
 ) {
-    Box(
-        modifier
-            .aspectRatio(1f)
-            .clip(CircleShape)
-            .then(if (isSelected) Modifier.border(2.5.dp, color, CircleShape) else Modifier)
-            .clickable(onClick = onClick)
-            .padding(if (isSelected) 4.dp else 1.dp),
-        contentAlignment = Alignment.Center
+    val cs = MaterialTheme.colorScheme
+    var open by rememberSaveable { mutableStateOf(false) }
+    if (!open) {
+        TextTab(text = "Change salary", selected = false, onClick = { open = true })
+        return
+    }
+    var amount by rememberSaveable { mutableStateOf("") }
+    var correction by rememberSaveable { mutableStateOf(false) }
+    var start by rememberSaveable { mutableStateOf(payPeriod.periodContaining(LocalDate.now()).start.toString()) }
+    val period = payPeriod.periodContaining(LocalDate.parse(start))
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(cs.surfaceVariant.copy(alpha = 0.5f))
+            .padding(14.dp)
     ) {
-        Box(Modifier.fillMaxSize().background(color, CircleShape))
+        FormTextField(
+            value = amount,
+            onValueChange = { amount = it },
+            placeholder = "New monthly salary",
+            singleLine = true,
+            keyboardType = KeyboardType.Decimal,
+            prefix = currencySymbol,
+            suffix = "/month"
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterPill(text = "From a pay period", selected = !correction, onClick = { correction = false })
+            FilterPill(text = "Correct the starting salary", selected = correction, onClick = { correction = true })
+        }
+        Spacer(Modifier.height(10.dp))
+        if (!correction) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Starting with", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                    Text(period.label(), style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+                }
+                CircleIconButton(
+                    icon = AppIcons.ChevronLeft, contentDescription = "Earlier pay period",
+                    onClick = { start = payPeriod.previous(period).start.toString() },
+                    diameter = 36.dp, iconSize = 16.dp, container = cs.surface, elevation = 0.dp
+                )
+                Spacer(Modifier.width(8.dp))
+                CircleIconButton(
+                    icon = AppIcons.ChevronRight, contentDescription = "Later pay period",
+                    onClick = { start = payPeriod.next(period).start.toString() },
+                    diameter = 36.dp, iconSize = 16.dp, container = cs.surface, elevation = 0.dp
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Earlier pay periods keep the salary they had.",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant
+            )
+        } else {
+            Text(
+                "Replaces the salary you started with, for every month before your first change.",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextTab(text = "Cancel", selected = false, onClick = { open = false })
+            Spacer(Modifier.weight(1f))
+            val cents = parseCents(amount)?.takeIf { it > 0L }
+            PillButton(
+                text = "Apply",
+                onClick = {
+                    if (cents != null) {
+                        onSetSalary(if (correction) null else period.start, cents)
+                        open = false
+                        amount = ""
+                    }
+                },
+                tinted = cents != null
+            )
+        }
+    }
+}
+
+/**
+ * Which hours are overtime and what they earn. Shared by both pay modes; the
+ * default (marked shifts, paid) is how the app has always worked.
+ */
+@Composable
+private fun OvertimeSection(
+    isFixed: Boolean,
+    source: OvertimeSource,
+    onSource: (OvertimeSource) -> Unit,
+    contractHoursText: String,
+    onContractHours: (String) -> Unit,
+    dailyLimitText: String,
+    onDailyLimit: (String) -> Unit,
+    multiplier: Double,
+    onMultiplier: (Double) -> Unit,
+    compensation: OvertimeCompensation,
+    onCompensation: (OvertimeCompensation) -> Unit,
+    hasReferenceRate: Boolean
+) {
+    val cs = MaterialTheme.colorScheme
+    val warning = AppTheme.accents.warning
+    FieldLabel("Overtime")
+    Spacer(Modifier.height(10.dp))
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OvertimeSource.entries.forEach { s ->
+            FilterPill(text = s.label, selected = s == source, onClick = { onSource(s) })
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    Text(
+        when (source) {
+            OvertimeSource.MARKED_SHIFTS -> "Shifts set to 1.5\u00d7, 1.75\u00d7 or 2\u00d7 in the shift form count as overtime."
+            OvertimeSource.WEEKLY_LIMIT -> "Hours past your contracted hours in a week count as overtime."
+            OvertimeSource.DAILY_LIMIT -> "Hours past a daily limit count as overtime."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = cs.onSurfaceVariant
+    )
+
+    when (source) {
+        OvertimeSource.WEEKLY_LIMIT -> {
+            // A salaried job already asks for its contract hours above.
+            if (!isFixed) {
+                Spacer(Modifier.height(10.dp))
+                FormTextField(
+                    value = contractHoursText,
+                    onValueChange = onContractHours,
+                    placeholder = "Contracted hours, e.g. 40",
+                    singleLine = true,
+                    keyboardType = KeyboardType.Decimal,
+                    suffix = "h/week"
+                )
+            } else if ((parseDecimal(contractHoursText) ?: 0.0) <= 0.0) {
+                Spacer(Modifier.height(6.dp))
+                Text("Set your contracted hours per week above.", style = MaterialTheme.typography.bodySmall, color = warning)
+            }
+        }
+        OvertimeSource.DAILY_LIMIT -> {
+            Spacer(Modifier.height(10.dp))
+            FormTextField(
+                value = dailyLimitText,
+                onValueChange = onDailyLimit,
+                placeholder = "Hours a day, e.g. 8",
+                singleLine = true,
+                keyboardType = KeyboardType.Decimal,
+                suffix = "h/day"
+            )
+        }
+        OvertimeSource.MARKED_SHIFTS -> Unit
+    }
+
+    if (source != OvertimeSource.MARKED_SHIFTS) {
+        Spacer(Modifier.height(12.dp))
+        Text("Overtime rate", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(1.25, 1.5, 1.75, 2.0).forEach { m ->
+                FilterPill(
+                    text = "%s\u00d7".format(formatDecimalInput(m)),
+                    selected = m == multiplier,
+                    onClick = { onMultiplier(m) }
+                )
+            }
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
+    Text("Compensated as", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OvertimeCompensation.entries.forEach { c ->
+            FilterPill(text = c.label, selected = c == compensation, onClick = { onCompensation(c) })
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    Text(
+        when (compensation) {
+            OvertimeCompensation.PAID ->
+                if (isFixed) "Paid on top of your salary: hours \u00d7 reference rate \u00d7 the multiplier."
+                else "Paid at the shift\u2019s rate \u00d7 the multiplier."
+            OvertimeCompensation.TIME_OFF -> "Not paid in money: hours \u00d7 the multiplier are banked as time off."
+            OvertimeCompensation.TRACK_ONLY ->
+                if (isFixed) "Counted and shown; nothing is added to your salary."
+                else "Counted and shown; overtime hours are paid at the plain rate, with no premium."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = cs.onSurfaceVariant
+    )
+    if (isFixed && compensation == OvertimeCompensation.PAID && !hasReferenceRate) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Add a reference hourly rate above to put a value on overtime. Until then it shows as hours.",
+            style = MaterialTheme.typography.bodySmall,
+            color = warning
+        )
     }
 }
 
@@ -825,7 +1323,7 @@ fun CopyShiftsSheet(
     sources: List<JobProfile>,
     /** The whole saved-shift library; the sheet slices it per profile itself. */
     allTemplates: List<Shift>,
-    sheetState: SheetState,
+    sheetState: AppSheetState,
     onConfirm: (List<Shift>) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -847,7 +1345,6 @@ fun CopyShiftsSheet(
             Column(
                 Modifier
                     .heightIn(max = 380.dp)
-                    .nestedScroll(SheetScrollLock)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -902,7 +1399,6 @@ fun CopyShiftsSheet(
         Column(
             Modifier
                 .heightIn(max = 300.dp)
-                .nestedScroll(SheetScrollLock)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -943,7 +1439,7 @@ fun CopyShiftsSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    AppIcons.ContentCopy, null, Modifier.size(18.dp),
+                    AppIcons.Copy, null, Modifier.size(18.dp),
                     tint = if (canCopy) cs.onPrimary else cs.onSurfaceVariant
                 )
                 Spacer(Modifier.width(9.dp))
@@ -984,7 +1480,6 @@ private fun CopySourceRow(
     onClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val accent = rememberShiftAccent(profile.colorValue)
     val alpha = if (enabled) 1f else 0.45f
 
     Row(
@@ -994,11 +1489,11 @@ private fun CopySourceRow(
             .background(cs.background)
             .border(1.dp, cs.outline, MaterialTheme.shapes.large)
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(11.dp).clip(CircleShape).background(accent.copy(alpha = alpha)))
-        Spacer(Modifier.width(13.dp))
+        ShiftIcon(profile.name, profile.iconName, profile.colorValue, size = 38.dp, dimmed = !enabled)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 profile.name,
@@ -1071,16 +1566,11 @@ private fun CopyShiftRow(
             .clip(MaterialTheme.shapes.medium)
             .background(tint)
             .then(if (locked) Modifier else Modifier.clickable(onClick = onToggle))
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier
-                .size(11.dp)
-                .clip(CircleShape)
-                .background(if (locked) cs.onSurfaceVariant.copy(alpha = 0.4f) else accent)
-        )
-        Spacer(Modifier.width(13.dp))
+        ShiftIcon(shift.name, shift.iconName, shift.colorValue, size = 36.dp, dimmed = locked)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 shift.name,
@@ -1153,7 +1643,7 @@ fun EmptyProfileShiftsState(
                 Modifier.size(88.dp).clip(CircleShape).background(cs.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(AppIcons.Shift, null, tint = cs.primary, modifier = Modifier.size(38.dp))
+                Icon(AppIcons.NavShifts, null, tint = cs.primary, modifier = Modifier.size(38.dp))
             }
             Spacer(Modifier.height(22.dp))
             Text(
@@ -1178,7 +1668,7 @@ fun EmptyProfileShiftsState(
                 PillButton(
                     text = "Copy from another job",
                     onClick = onCopy,
-                    icon = AppIcons.ContentCopy
+                    icon = AppIcons.Copy
                 )
             }
         }

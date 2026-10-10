@@ -171,7 +171,7 @@ fun TemplatesScreen(
                     ) {
                         if (onCopyFromProfile != null) {
                             CircleIconButton(
-                                icon = AppIcons.ContentCopy,
+                                icon = AppIcons.Copy,
                                 contentDescription = "Copy shifts from another job profile",
                                 onClick = onCopyFromProfile,
                                 container = cs.surfaceVariant,
@@ -454,9 +454,9 @@ private fun ShiftCard(
         shape = MaterialTheme.shapes.large,
         contentPadding = PaddingValues(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 14.dp)
     ) {
-        // ── Top: dot · name · pay badge ──
+        // ── Top: mark · name · pay badge ──
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(13.dp).clip(CircleShape).background(color))
+            ShiftIcon(shift.name, shift.iconName, shift.colorValue, size = 44.dp)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -470,7 +470,7 @@ private fun ShiftCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (shift.location.isNotBlank()) {
                             Icon(
-                                AppIcons.Place, null,
+                                AppIcons.Location, null,
                                 tint = cs.onSurfaceVariant,
                                 modifier = Modifier.size(14.dp)
                             )
@@ -554,7 +554,7 @@ private fun ShiftCard(
         // ── Bottom: time · actions ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                AppIcons.Schedule, null,
+                AppIcons.Clock, null,
                 tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp)
             )
             Spacer(Modifier.width(10.dp))
@@ -673,7 +673,7 @@ fun EmptyTemplatesState(modifier: Modifier = Modifier, cs: ColorScheme = Materia
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    AppIcons.Shift, null,
+                    AppIcons.NavShifts, null,
                     tint = cs.primary, modifier = Modifier.size(38.dp)
                 )
             }

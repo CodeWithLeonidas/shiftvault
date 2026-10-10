@@ -2,7 +2,7 @@ package com.leonidaskiachidis.shiftvault
 
 /*
  * ─────────────────────────────────────────────────────────────────────────────
- *  StatsScreen — "Analytics".
+ *  InsightsPane — the Wallet's "Insights" tab (formerly the Analytics screen).
  *
  *  Header: big title + Export menu (PDF / Excel), a period pill, then tabs.
  *    Overview — three stat cards with period-over-period deltas, hours bar
@@ -42,7 +42,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,9 +74,14 @@ private const val FallbackSlate = 0xFF9AA1AC
 //  Screen
 // ══════════════════════════════════════════════════════════════
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The shift analytics — hours, earnings worked out from shifts, charts and
+ * insights — as the Insights tab of the Wallet. The Wallet screen supplies the
+ * title and the job chip; this pane brings its own period picker and export.
+ */
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun StatsScreen(
+internal fun InsightsPane(
     /**
      * Already narrowed to [activeProfile] by the caller, so every figure on this
      * screen — totals, deltas, charts, exports — is that job's and only that
@@ -85,12 +89,12 @@ fun StatsScreen(
      * "compare my jobs" view would do instead.
      */
     savedShifts: Map<LocalDate, List<Shift>>,
-    onBackClick: () -> Unit,
     currencyCode: String = "EUR",
     /** Opens the export sheet, offering the period currently on show first. */
     onExport: (ExportPeriod) -> Unit = {},
     activeProfile: JobProfile = JobProfile.Default,
-    onOpenProfiles: () -> Unit = {},
+    /** The calendar's first day, for weekly overtime. */
+    weekStart: java.time.DayOfWeek = java.time.DayOfWeek.MONDAY,
     modifier: Modifier = Modifier
 ) {
     // Saveable (java.time types are Serializable), so the period the user
@@ -114,9 +118,9 @@ fun StatsScreen(
     var showRangePicker by rememberSaveable { mutableStateOf(false) }
     var selectedBreakdown by rememberSaveable { mutableStateOf<String?>(null) }
     var showDaysOff by rememberSaveable { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberAppSheetState()
 
-    val stats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode, payRange) {
+    val rawStats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode, payRange) {
         when (mode) {
             StatsMode.PAY_PERIOD -> StatsHelper.calculateRangeStats(savedShifts, payRange.start, payRange.end)
             StatsMode.MONTHLY -> StatsHelper.calculateMonthlyStats(savedShifts, selectedMonth)
@@ -126,7 +130,7 @@ fun StatsScreen(
     }
 
     // Previous comparable period — drives the deltas on the stat cards.
-    val prevStats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode, payRange) {
+    val rawPrevStats = remember(savedShifts, selectedMonth, selectedYear, startDate, endDate, mode, payRange) {
         when (mode) {
             StatsMode.PAY_PERIOD -> {
                 val prev = payPeriod.previous(payRange)
@@ -181,15 +185,51 @@ fun StatsScreen(
         }
     }
 
+    // A salary isn't earned shift by shift. For a salaried job the money
+    // figures come from the same period calculation as Home and the Wallet
+    // (the salary for each pay period ending in the range, plus overtime and
+    // extras), and the earnings charts show what comes on top of it.
+    val isFixed = activeProfile.pay.isFixed
+    val fixedPay = remember(isFixed, activeProfile, savedShifts, periodStart, periodEnd, weekStart) {
+        if (isFixed) Compensation.forRange(activeProfile, savedShifts, DateRange(periodStart, periodEnd), weekStart) else null
+    }
+    val stats = remember(rawStats, fixedPay) {
+        fixedPay?.let { rawStats.copy(estimatedEarnings = it.expectedCents / 100.0) } ?: rawStats
+    }
+    val prevStats = remember(rawPrevStats, isFixed, activeProfile, savedShifts, mode, payRange, selectedMonth, selectedYear, startDate, endDate, weekStart) {
+        if (!isFixed) rawPrevStats
+        else {
+            val prev = when (mode) {
+                StatsMode.PAY_PERIOD -> payPeriod.previous(payRange)
+                StatsMode.MONTHLY -> selectedMonth.minusMonths(1).let { DateRange(it.atDay(1), it.atEndOfMonth()) }
+                StatsMode.YEARLY -> selectedYear.minusYears(1).let { DateRange(it.atDay(1), it.atMonth(12).atEndOfMonth()) }
+                StatsMode.CUSTOM -> {
+                    val len = ChronoUnit.DAYS.between(startDate, endDate) + 1
+                    DateRange(startDate.minusDays(len), startDate.minusDays(1))
+                }
+            }
+            rawPrevStats.copy(
+                estimatedEarnings = Compensation.forRange(activeProfile, savedShifts, prev, weekStart).expectedCents / 100.0
+            )
+        }
+    }
+
     // Name to colour, built once per data change instead of scanning inside rows.
     val colorByName = remember(savedShifts) {
         val m = HashMap<String, Long>()
         for (list in savedShifts.values) for (s in list) m.putIfAbsent(s.name, s.colorValue)
         m
     }
+    // Same, for each shift's mark in the per-shift lists.
+    val iconByName = remember(savedShifts) {
+        val m = HashMap<String, String>()
+        for (list in savedShifts.values) for (s in list) s.iconName?.let { m.putIfAbsent(s.name, it) }
+        m
+    }
 
     // Earnings per day inside the period — source for the trend chart & insights.
-    val dailyEarnings = remember(savedShifts, periodStart, periodEnd) {
+    val dailyEarnings = remember(savedShifts, periodStart, periodEnd, fixedPay) {
+        if (fixedPay != null) return@remember HashMap(fixedPay.extraByDay.mapValues { it.value / 100.0 })
         val out = HashMap<LocalDate, Double>()
         for ((date, list) in savedShifts) {
             if (date.isBefore(periodStart) || date.isAfter(periodEnd)) continue
@@ -214,8 +254,8 @@ fun StatsScreen(
         buildHourBuckets(dailyHours, mode, selectedMonth, selectedYear, periodStart, periodEnd)
     }
 
-    val insights = remember(dailyHours, dailyEarnings, stats, mode, selectedMonth) {
-        buildInsights(dailyHours, dailyEarnings, stats, mode, selectedMonth)
+    val insights = remember(dailyHours, dailyEarnings, stats, mode, selectedMonth, isFixed) {
+        buildInsights(dailyHours, dailyEarnings, stats, mode, selectedMonth, projectable = !isFixed)
     }
 
     val spanDays = remember(periodStart, periodEnd) {
@@ -237,69 +277,9 @@ fun StatsScreen(
     val accents = AppTheme.accents
     val accent = cs.primary
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(cs.background)
-            .statusBarsPadding()
-    ) {
-        // ── Header ──
-        ScreenHeader(
-            title = "Analytics",
-            trailing = {
-                PillButton(
-                    text = "Export",
-                    onClick = {
-                        onExport(ExportPeriod("Shown in Analytics", DateRange(periodStart, periodEnd)))
-                    },
-                    icon = AppIcons.Upload
-                )
-            }
-        )
-
-        Spacer(Modifier.height(14.dp))
-
-        // ── Scope: which job, then which period ──
-        //
-        // Read left to right they say exactly what the numbers below cover.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = AppSpace.screenH),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
-            PillButton(
-                text = periodLabel,
-                onClick = { showPeriodSheet = true },
-                icon = AppIcons.DateRange,
-                tinted = true
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ── Tabs ──
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = AppSpace.screenH),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            StatsTab.entries.forEach { t ->
-                FilterPill(
-                    text = t.label,
-                    selected = t == tab,
-                    onClick = { tab = t }
-                )
-            }
-        }
-
-        Spacer(Modifier.height(18.dp))
-
+    Column(modifier = modifier.fillMaxSize()) {
+        // Nothing sits above the list: the period row scrolls away with the
+        // content and the tabs pin themselves, so the charts get the screen.
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
             contentPadding = PaddingValues(
@@ -310,6 +290,51 @@ fun StatsScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // ── Scope: which period, and getting it out as a report ──
+            item(key = "scope") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PillButton(
+                        text = periodLabel,
+                        onClick = { showPeriodSheet = true },
+                        icon = AppIcons.Calendar,
+                        tinted = true
+                    )
+                    PillButton(
+                        text = "Export",
+                        onClick = {
+                            onExport(ExportPeriod("Shown in Insights", DateRange(periodStart, periodEnd)))
+                        },
+                        icon = AppIcons.Upload
+                    )
+                }
+            }
+
+            // ── Tabs: pinned while their content scrolls beneath ──
+            stickyHeader(key = "tabs") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cs.background)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    StatsTab.entries.forEach { t ->
+                        FilterPill(
+                            text = t.label,
+                            selected = t == tab,
+                            onClick = { tab = t }
+                        )
+                    }
+                }
+            }
+
             when (tab) {
 
                 // ═════════════ OVERVIEW ═════════════
@@ -390,7 +415,7 @@ fun StatsScreen(
                     item {
                         val growth = pctDelta(stats.estimatedEarnings, prevStats.estimatedEarnings)
                         StatsCard(
-                            title = "Earnings trend",
+                            title = if (isFixed) "Extra pay trend" else "Earnings trend",
                             trailing = {
                                 if (growth != null) {
                                     val up = growth >= 0
@@ -432,11 +457,11 @@ fun StatsScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             MetricTile(
-                                "Rest days", "${stats.restDays}", AppIcons.Weekend, accents.evening,
+                                "Rest days", "${stats.restDays}", AppIcons.TimeOff, accents.evening,
                                 clickable = false, modifier = Modifier.weight(1f)
                             )
                             MetricTile(
-                                "Days off", "${stats.dayOffDays}", AppIcons.BeachAccess, accents.morning,
+                                "Days off", "${stats.dayOffDays}", AppIcons.Vacation, accents.morning,
                                 stats.dayOffDays > 0, Modifier.weight(1f)
                             ) { showDaysOff = true }
                         }
@@ -457,7 +482,9 @@ fun StatsScreen(
                             BreakdownRow(
                                 name, count,
                                 stats.shiftBreakdownHours[name] ?: 0.0, stats.totalHours,
-                                rememberShiftAccent(colorByName[name] ?: FallbackSlate)
+                                rememberShiftAccent(colorByName[name] ?: FallbackSlate),
+                                iconName = iconByName[name],
+                                colorValue = colorByName[name] ?: FallbackSlate
                             ) { selectedBreakdown = name }
                         }
                     }
@@ -511,7 +538,9 @@ fun StatsScreen(
                                     if (index > 0) Spacer(Modifier.height(16.dp))
                                     EarningsRow(
                                         pair.first, pair.second, top, currencySymbol,
-                                        rememberShiftAccent(colorByName[pair.first] ?: FallbackSlate)
+                                        rememberShiftAccent(colorByName[pair.first] ?: FallbackSlate),
+                                        iconName = iconByName[pair.first],
+                                        colorValue = colorByName[pair.first] ?: FallbackSlate
                                     )
                                 }
                             }
@@ -523,7 +552,7 @@ fun StatsScreen(
                 StatsTab.TRENDS -> {
                     item {
                         StatsCard(
-                            title = "Earnings over time",
+                            title = if (isFixed) "Overtime & extras over time" else "Earnings over time",
                             trailing = {
                                 if (spanDays <= 62) {
                                     BucketToggle(bucket) { bucket = it }
@@ -553,11 +582,11 @@ fun StatsScreen(
                                 stats.estimatedEarnings / stats.totalShifts else 0.0
                             MetricTile(
                                 "Avg per shift", shortMoney(currencySymbol, perShift),
-                                AppIcons.Payments, accents.evening, false, Modifier.weight(1f)
+                                AppIcons.Wallet, accents.evening, false, Modifier.weight(1f)
                             ) {}
                             MetricTile(
                                 "Avg hours", compactHours(stats.averageHoursPerShift),
-                                AppIcons.Schedule, accents.morning, false, Modifier.weight(1f)
+                                AppIcons.Clock, accents.morning, false, Modifier.weight(1f)
                             ) {}
                         }
                     }
@@ -638,7 +667,7 @@ fun StatsScreen(
                         .padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(AppIcons.DateRange, null, tint = accent, modifier = Modifier.size(19.dp))
+                    Icon(AppIcons.Calendar, null, tint = accent, modifier = Modifier.size(19.dp))
                     Spacer(Modifier.width(12.dp))
                     Text(
                         "${startDate.format(shortDateFmt)} – ${endDate.format(longDateFmt)}",
@@ -667,13 +696,9 @@ fun StatsScreen(
         val totalH = stats.shiftBreakdownHours[name] ?: 0.0
         val totalEarn = entries.sumOf { it.earnings }
 
-        ModalBottomSheet(
+        AppBottomSheet(
             onDismissRequest = { selectedBreakdown = null },
-            sheetState = sheetState,
-            containerColor = cs.surface,
-            contentColor = cs.onSurface,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-            dragHandle = { StatsSheetHandle() }
+            sheetState = sheetState
         ) {
             Column(
                 Modifier
@@ -683,8 +708,8 @@ fun StatsScreen(
                     .padding(bottom = 32.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(12.dp).clip(CircleShape).background(color))
-                    Spacer(Modifier.width(11.dp))
+                    ShiftIcon(name, iconByName[name], colorByName[name] ?: FallbackSlate, size = 40.dp)
+                    Spacer(Modifier.width(12.dp))
                     Text(
                         name,
                         style = MaterialTheme.typography.displayMedium,
@@ -719,8 +744,7 @@ fun StatsScreen(
                 LazyColumn(
                     Modifier
                         .fillMaxWidth()
-                        .weight(1f)
-                        .nestedScroll(SheetScrollLock),
+                        .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(entries) { e -> EntryRow(e, color, currencySymbol) }
@@ -730,18 +754,14 @@ fun StatsScreen(
     }
 
     if (showDaysOff) {
-        ModalBottomSheet(
+        AppBottomSheet(
             onDismissRequest = { showDaysOff = false },
-            sheetState = sheetState,
-            containerColor = cs.surface,
-            contentColor = cs.onSurface,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-            dragHandle = { StatsSheetHandle() }
+            sheetState = sheetState
         ) {
             DayListSheet(
                 "Days off",
                 "${stats.dayOffDays} day${if (stats.dayOffDays != 1) "s" else ""} off",
-                stats.dayOffDates, accents.morning, AppIcons.BeachAccess,
+                stats.dayOffDates, accents.morning, AppIcons.Vacation,
                 "No days off in this period"
             )
         }
@@ -787,7 +807,7 @@ fun StatsScreen(
 // ══════════════════════════════════════════════════════════════
 
 @Composable
-private fun StatsCard(
+internal fun StatsCard(
     title: String,
     subtitle: String? = null,
     trailing: (@Composable () -> Unit)? = null,
@@ -1113,10 +1133,10 @@ private fun InsightRow(insight: Insight, currencySymbol: String) {
             contentAlignment = Alignment.Center
         ) {
             val painter = when (insight.iconKey) {
-                InsightIcon.CALENDAR -> AppIcons.CalendarMonth
-                InsightIcon.STAR -> AppIcons.Star
-                InsightIcon.MONEY -> AppIcons.Payments
-                InsightIcon.CHART -> AppIcons.BarChart
+                InsightIcon.CALENDAR -> AppIcons.Calendar
+                InsightIcon.STAR -> AppIcons.SetRate
+                InsightIcon.MONEY -> AppIcons.Wallet
+                InsightIcon.CHART -> AppIcons.Statistics
             }
             Icon(painter, null, tint = cs.primary, modifier = Modifier.size(18.dp))
         }
@@ -1191,6 +1211,8 @@ private fun BreakdownRow(
     hours: Double,
     totalHours: Double,
     color: Color,
+    iconName: String?,
+    colorValue: Long,
     onClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -1202,7 +1224,7 @@ private fun BreakdownRow(
         onClick = onClick
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(11.dp).clip(CircleShape).background(color))
+            ShiftIcon(name, iconName, colorValue, size = 36.dp)
             Spacer(Modifier.width(12.dp))
             Text(
                 name,
@@ -1236,14 +1258,16 @@ private fun EarningsRow(
     amount: Double,
     topAmount: Double,
     currencySymbol: String,
-    color: Color
+    color: Color,
+    iconName: String?,
+    colorValue: Long
 ) {
     val cs = MaterialTheme.colorScheme
     val pct = if (topAmount > 0) (amount / topAmount).toFloat().coerceIn(0f, 1f) else 0f
 
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+            ShiftIcon(name, iconName, colorValue, size = 30.dp)
             Spacer(Modifier.width(10.dp))
             Text(
                 name,
@@ -1293,7 +1317,7 @@ private fun EmptyState(title: String, body: String) {
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                AppIcons.BarChart, null,
+                AppIcons.Statistics, null,
                 tint = cs.onSurfaceVariant, modifier = Modifier.size(34.dp)
             )
         }
@@ -1317,18 +1341,14 @@ private fun EmptyState(title: String, body: String) {
 @Composable
 private fun StatsSheet(
     onDismiss: () -> Unit,
-    sheetState: SheetState,
+    sheetState: AppSheetState,
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    ModalBottomSheet(
+    AppBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = cs.surface,
-        contentColor = cs.onSurface,
-        shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-        dragHandle = { StatsSheetHandle() }
+        sheetState = sheetState
     ) {
         Column(
             Modifier
@@ -1346,16 +1366,6 @@ private fun StatsSheet(
     }
 }
 
-@Composable
-private fun StatsSheetHandle() {
-    val cs = MaterialTheme.colorScheme
-    Box(
-        Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(cs.outline))
-    }
-}
 
 @Composable
 private fun Stepper(
@@ -1512,8 +1522,7 @@ private fun DayListSheet(
             LazyColumn(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .nestedScroll(SheetScrollLock),
+                    .weight(1f),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(dates) { d ->
@@ -1621,7 +1630,9 @@ private fun buildInsights(
     dailyEarnings: Map<LocalDate, Double>,
     stats: MonthlyStats,
     mode: StatsMode,
-    month: YearMonth
+    month: YearMonth,
+    /** False for a salary: it is paid whole, so a pace projection would be meaningless. */
+    projectable: Boolean = true
 ): List<Insight> = buildList {
 
     // Busiest weekday
@@ -1655,7 +1666,7 @@ private fun buildInsights(
     }
 
     // Month-end projection — only while looking at the running month
-    if (mode == StatsMode.MONTHLY && month == YearMonth.now() && stats.estimatedEarnings > 0) {
+    if (projectable && mode == StatsMode.MONTHLY && month == YearMonth.now() && stats.estimatedEarnings > 0) {
         val today = LocalDate.now()
         val elapsed = today.dayOfMonth
         val total = month.lengthOfMonth()

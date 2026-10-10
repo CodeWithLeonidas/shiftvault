@@ -1,15 +1,22 @@
 package com.leonidaskiachidis.shiftvault.ui.theme
 
+import android.content.Context
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -45,6 +52,8 @@ data class AppAccents(
     val nightSoft: Color,
     val positive: Color,
     val negative: Color,
+    /** Needs attention but isn't an error: rest warnings, an overdue backup. */
+    val warning: Color,
     val cardShadow: Color,
     /**
      * Drawn on top of the calendar surface for Saturday / Sunday cells. A plain
@@ -64,8 +73,9 @@ private val LightAccents = AppAccents(
     nightSoft   = ShiftNightSoft,
     positive    = PositiveGreen,
     negative    = NegativeRed,
+    warning     = Color(0xFFD9822B),
     cardShadow  = Color(0x14262433),
-    weekendWash = Color(0x0D000000)
+    weekendWash = Color(0x08000000)
 )
 
 private val DarkAccents = AppAccents(
@@ -78,8 +88,9 @@ private val DarkAccents = AppAccents(
     nightSoft   = Color(0xFF33271E),
     positive    = Color(0xFF7FC79C),
     negative    = Color(0xFFE58A8A),
+    warning     = Color(0xFFF0B060),
     cardShadow  = Color(0x33000000),
-    weekendWash = Color(0x2B000000)
+    weekendWash = Color(0x1A000000)
 )
 
 val LocalAppAccents = staticCompositionLocalOf { LightAccents }
@@ -373,6 +384,30 @@ val DarkThemeVariants: List<ThemeVariantInfo> = listOf(
     darkInfo("steel", "Steel", SteelDark)
 )
 
+/**
+ * The Material You theme: colours taken from the wallpaper (Android 12+). On
+ * older systems a stored "dynamic" choice falls back to the default palette
+ * through [resolveColorScheme], like any key this build doesn't know.
+ */
+const val DynamicThemeKey = "dynamic"
+
+val supportsDynamicTheme: Boolean
+    get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
+@RequiresApi(Build.VERSION_CODES.S)
+private fun dynamicScheme(isDark: Boolean, context: Context): ColorScheme =
+    if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+
+/** What the theme picker offers: the wallpaper theme first where there is one, then the app's eight. */
+fun themeVariantsFor(isDark: Boolean, context: Context): List<ThemeVariantInfo> {
+    val fixed = if (isDark) DarkThemeVariants else LightThemeVariants
+    if (!supportsDynamicTheme) return fixed
+    val scheme = dynamicScheme(isDark, context)
+    return listOf(
+        ThemeVariantInfo(DynamicThemeKey, "Wallpaper", isDark, scheme.primary, scheme.background, scheme.surface, scheme)
+    ) + fixed
+}
+
 fun resolveColorScheme(isDark: Boolean, variant: String): ColorScheme =
     if (isDark) {
         DarkThemeVariants.firstOrNull { it.key == variant }?.colorScheme ?: WarmNightDark
@@ -386,7 +421,11 @@ fun ShiftVaultTheme(
     themeVariant: String = "default",
     content: @Composable () -> Unit
 ) {
-    val colorScheme = resolveColorScheme(darkTheme, themeVariant)
+    val context = LocalContext.current
+    val colorScheme = remember(darkTheme, themeVariant, context) {
+        if (themeVariant == DynamicThemeKey && supportsDynamicTheme) dynamicScheme(darkTheme, context)
+        else resolveColorScheme(darkTheme, themeVariant)
+    }
     val accents = if (darkTheme) DarkAccents else LightAccents
 
     CompositionLocalProvider(LocalAppAccents provides accents) {

@@ -62,7 +62,8 @@ data class Shift(
      */
     val jobId: String? = null,
     val notes: String = "",
-    val iconName: String? = null, // null means show color indicator
+    /** A ShiftIconCatalog key; null shows the first letter of [name]. */
+    val iconName: String? = null,
 
     // ── Legacy (v1) — kept so old saved JSON still decodes. Read via
     //    migrated(); never write to these from new code. ──
@@ -131,8 +132,28 @@ data class JobProfile(
     /** Epoch millis; orders the switcher so the list never shuffles. */
     val createdAt: Long = 0L,
     /** How this job's pay periods fall. Defaults to the calendar month. */
-    val payPeriod: PayPeriod = PayPeriod()
+    val payPeriod: PayPeriod = PayPeriod(),
+    /** A ShiftIconCatalog key; null shows the first letter of [name]. */
+    val iconName: String? = null,
+    /**
+     * Share of gross pay withheld — tax, insurance — as a percentage. Only
+     * drives the "≈ take-home" estimate; 0 means no estimate is shown.
+     */
+    val deductionPercent: Double = 0.0,
+    /** Earnings target for one pay period; 0 = no goal. */
+    val earningsGoal: Double = 0.0,
+    /** Hours target for one pay period; 0 = no goal. */
+    val hoursGoal: Double = 0.0,
+    /** How this job pays: hourly or a fixed monthly salary, and its overtime rules. */
+    val pay: PaySetup = PaySetup()
 ) {
+    /** Gross pay after [deductionPercent], for the take-home estimate. */
+    fun takeHome(gross: Double): Double =
+        gross * (1.0 - deductionPercent.coerceIn(0.0, 100.0) / 100.0)
+
+    val hasGoal: Boolean get() = earningsGoal > 0.0 || hoursGoal > 0.0
+
+
     companion object {
         /**
          * The profile every pre-profiles record is folded into. Shifts written

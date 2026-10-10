@@ -1,6 +1,23 @@
 package com.leonidaskiachidis.shiftvault
 
 import android.os.Bundle
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.SystemBarStyle
@@ -19,7 +36,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -70,9 +86,24 @@ import kotlinx.coroutines.withContext
 
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * A launcher shortcut waiting to be acted on (see res/xml/shortcuts.xml).
+     * Taken from the launching intent only on a fresh start, so rotating the
+     * screen doesn't replay it; the UI clears it once handled.
+     */
+    private val pendingShortcut = mutableStateOf<String?>(null)
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingShortcut.value = intent.action
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) pendingShortcut.value = intent?.action
         enableEdgeToEdge()
         setContent {
             // 1. Create a state variable for the theme
@@ -98,6 +129,9 @@ class MainActivity : ComponentActivity() {
             val lightThemeVariant by shiftManager.getLightThemeVariant.collectAsState(initial = "default")
             val darkThemeVariant by shiftManager.getDarkThemeVariant.collectAsState(initial = "default")
             val reminderSettings by shiftManager.getReminderSettings.collectAsState(initial = ReminderSettings())
+            val restWarnings by shiftManager.getRestWarnings.collectAsState(initial = true)
+            val lastBackupAt by shiftManager.getLastBackupAt.collectAsState(initial = null)
+            val ledgerData by shiftManager.getLedger.collectAsState(initial = LedgerData.Empty)
             val themeVariant = if (isDarkTheme) darkThemeVariant else lightThemeVariant
 
             // enableEdgeToEdge() in onCreate() reads the *system* dark-mode flag,
@@ -132,6 +166,10 @@ class MainActivity : ComponentActivity() {
                     // session: every tab then renders fully populated on its very
                     // first frame instead of flashing an empty state.
                     var savedTemplates by remember { mutableStateOf<List<Shift>>(emptyList()) }
+                    // False until storage has answered once: the shortcut that
+                    // opens today must see today's real shifts, not the empty
+                    // map the screen starts from.
+                    var shiftsLoaded by remember { mutableStateOf(false) }
                     LaunchedEffect(Unit) {
                         // Opens the database and runs the one-time import from
                         // the old DataStore JSON up front, instead of on the
@@ -145,6 +183,7 @@ class MainActivity : ComponentActivity() {
                         launch {
                             shiftManager.getShifts.collect { loadedShifts ->
                                 savedShifts = loadedShifts
+                                shiftsLoaded = true
                             }
                         }
                         launch {
@@ -169,6 +208,10 @@ class MainActivity : ComponentActivity() {
                     val profileShifts = remember(savedShifts, activeProfile.id) {
                         ProfileScope.shifts(savedShifts, activeProfile.id)
                     }
+                    // The Wallet shows one job's ledger, like every other screen.
+                    val profileLedger = remember(ledgerData, activeProfile.id) {
+                        ledgerData.forJob(activeProfile.id)
+                    }
                     val profileTemplates = remember(savedTemplates, activeProfile.id) {
                         savedTemplates.filter { it.jobId == activeProfile.id }
                     }
@@ -186,9 +229,9 @@ class MainActivity : ComponentActivity() {
                         mutableStateOf(null)
                     }
                     var showProfileEditor by rememberSaveable { mutableStateOf(false) }
-                    val profileSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-                    val profileEditorState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-                    val copySheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                    val profileSheetState = rememberAppSheetState()
+                    val profileEditorState = rememberAppSheetState()
+                    val copySheetState = rememberAppSheetState()
 
                     // The picked backup file, held by URI rather than by its
                     // contents: it survives rotation this way (a whole backup
@@ -196,13 +239,34 @@ class MainActivity : ComponentActivity() {
                     // confirm.
                     var pendingImportUri by rememberSaveable { mutableStateOf<String?>(null) }
 
+                    // ── In-app review ──
+                    //
+                    // Asked at most once (see ReviewPolicy), and only straight
+                    // after something worked: a shift was logged, or a report
+                    // was saved or shared.
+                    val workedShiftCount = remember(savedShifts) {
+                        savedShifts.values.sumOf { day -> day.count { PayEngine.isWorked(it) } }
+                    }
+                    fun maybeAskForReview() {
+                        scope.launch {
+                            ReviewPrompt.maybeAsk(this@MainActivity, shiftManager, workedShiftCount)
+                        }
+                    }
+                    var lastWorkedCount by remember { mutableIntStateOf(-1) }
+                    LaunchedEffect(workedShiftCount, shiftsLoaded) {
+                        if (!shiftsLoaded) return@LaunchedEffect
+                        // The first load is not something the user just did.
+                        if (lastWorkedCount in 0 until workedShiftCount) maybeAskForReview()
+                        lastWorkedCount = workedShiftCount
+                    }
+
                     // ── Export sheet ──
                     var showExportSheet by rememberSaveable { mutableStateOf(false) }
                     var exportInitialFormat by rememberSaveable { mutableStateOf(ExportFormat.PDF) }
                     // The Analytics period offered first, kept as plain values so it saves.
                     var exportShownStart by rememberSaveable { mutableStateOf<String?>(null) }
                     var exportShownEnd by rememberSaveable { mutableStateOf<String?>(null) }
-                    val exportSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                    val exportSheetState = rememberAppSheetState()
                     // What Save is writing once the picker returns; may outlive the activity.
                     var pendingSave by rememberSaveable(stateSaver = jsonSaver<ExportRequest?>()) {
                         mutableStateOf(null)
@@ -248,6 +312,7 @@ class MainActivity : ComponentActivity() {
                                 else "Couldn't save $label: ${failure.message}",
                                 Toast.LENGTH_LONG
                             ).show()
+                            if (failure == null) maybeAskForReview()
                         }
                     }
 
@@ -255,17 +320,28 @@ class MainActivity : ComponentActivity() {
                     fun writeReport(request: ExportRequest, out: java.io.OutputStream) {
                         val range = request.range
                         val shifts = range?.slice(profileShifts) ?: profileShifts
-                        val meta = reportMeta.copy(periodLabel = range?.label())
+                        // A salary is paid per period, not per shift: the report's
+                        // totals then come from the same calculation as the app.
+                        val payRange = range ?: shifts.keys.takeIf { it.isNotEmpty() }?.let { DateRange(it.min(), it.max()) }
+                        val pay = if (activeProfile.pay.isFixed && payRange != null)
+                            Compensation.forRange(activeProfile, profileShifts, payRange, weekStartDay(startOfWeek))
+                        else null
+                        val meta = reportMeta.copy(periodLabel = range?.label(), pay = pay)
                         when (request.format) {
                             ExportFormat.PDF -> ExportHelper.exportShiftsToPdf(context, shifts, out, meta)
                             ExportFormat.EXCEL -> ExportHelper.exportShiftsToExcel(shifts, out, meta)
+                            ExportFormat.CALENDAR -> CalendarExport.write(shifts, activeProfile.name, out)
                         }
                     }
 
                     fun onSavePicked(uri: android.net.Uri?) {
                         val request = pendingSave ?: return
                         pendingSave = null
-                        val label = if (request.format == ExportFormat.PDF) "PDF" else "Excel file"
+                        val label = when (request.format) {
+                            ExportFormat.PDF -> "PDF"
+                            ExportFormat.EXCEL -> "Excel file"
+                            ExportFormat.CALENDAR -> "Calendar file"
+                        }
                         runExport(uri, label) { out -> writeReport(request, out) }
                     }
 
@@ -275,6 +351,10 @@ class MainActivity : ComponentActivity() {
 
                     val excelExportLauncher = rememberLauncherForActivityResult(
                         contract = ActivityResultContracts.CreateDocument(ExportFormat.EXCEL.mimeType)
+                    ) { uri -> onSavePicked(uri) }
+
+                    val calendarExportLauncher = rememberLauncherForActivityResult(
+                        contract = ActivityResultContracts.CreateDocument(ExportFormat.CALENDAR.mimeType)
                     ) { uri -> onSavePicked(uri) }
 
                     /**
@@ -312,9 +392,15 @@ class MainActivity : ComponentActivity() {
                                         (request.range?.let { " · ${it.label()}" } ?: "")
                                 )
                                 clipData = android.content.ClipData.newRawUri(file.name, uri)
+                                // A shared calendar file is opened, not attached:
+                                // let calendar apps offer to import it.
+                                if (request.format == ExportFormat.CALENDAR) {
+                                    putExtra(android.content.Intent.EXTRA_TEXT, "Shifts for ${activeProfile.name}")
+                                }
                                 addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
                             context.startActivity(android.content.Intent.createChooser(send, "Share report"))
+                            maybeAskForReview()
                         }
                     }
 
@@ -341,6 +427,7 @@ class MainActivity : ComponentActivity() {
                                 val json = BackupHelper.serialize(shiftManager.getAllDataForBackup())
                                 withContext(Dispatchers.IO) { BackupHelper.writeToUri(context, uri, json) }
                             } catch (_: Exception) { false }
+                            if (success) shiftManager.saveLastBackupAt(System.currentTimeMillis())
                             Toast.makeText(
                                 context,
                                 if (success) "Backup saved successfully!" else "Failed to save backup",
@@ -377,6 +464,30 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // ── Launcher shortcuts ──
+                    var homeAddRequest by remember { mutableStateOf<java.time.LocalDate?>(null) }
+                    fun openTab(route: String) {
+                        popCustomShift(navController)
+                        navController.navigate(route) {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    }
+                    val shortcut = pendingShortcut.value
+                    LaunchedEffect(shortcut) {
+                        when (shortcut) {
+                            Shortcuts.ADD_SHIFT -> {
+                                openTab(Screen.Vault.route)
+                                homeAddRequest = java.time.LocalDate.now()
+                            }
+                            Shortcuts.WALLET -> openTab(Screen.Wallet.route)
+                            Shortcuts.EXPORT -> openExportSheet(ExportFormat.PDF, null)
+                            else -> return@LaunchedEffect
+                        }
+                        pendingShortcut.value = null
+                    }
+
                     // We need to track the current route to highlight the bottom bar icons
                     val navBackStackEntry by navController.currentBackStackEntryAsState()
                     val currentRoute = navBackStackEntry?.destination?.route
@@ -405,25 +516,29 @@ class MainActivity : ComponentActivity() {
                         // Main content with nav bar
                         Column(modifier = Modifier.fillMaxSize()) {
                             // The NavHost replaces your Box/when logic
+                            // One set of transitions for every destination: tabs slide
+                            // in the direction of their place in the bar, and push
+                            // and pop are the same thing for peers (back from
+                            // Analytics to Home still slides in from the left).
                             NavHost(
                                 navController = navController,
                                 startDestination = Screen.Vault.route,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                enterTransition = {
+                                    NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
+                                },
+                                exitTransition = {
+                                    NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
+                                },
+                                popEnterTransition = {
+                                    NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
+                                },
+                                popExitTransition = {
+                                    NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
+                                }
                             ) {
                                 composable(
-                                    route = Screen.Vault.route,
-                                    enterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    exitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popEnterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popExitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    }
+                                    route = Screen.Vault.route
                                 ) {
                                     MainScreen(
                                         onSettingsClick = { navController.navigate(Screen.Settings.route) },
@@ -440,24 +555,19 @@ class MainActivity : ComponentActivity() {
                                         customTemplates = profileTemplates,
                                         shifts = savedShifts,
                                         activeProfile = activeProfile,
-                                        onOpenProfiles = { showProfileSheet = true }
+                                        onOpenProfiles = { showProfileSheet = true },
+                                        onEditProfile = {
+                                            editingProfile = activeProfile
+                                            showProfileEditor = true
+                                        },
+                                        restWarnings = restWarnings,
+                                        addRequest = homeAddRequest.takeIf { shiftsLoaded },
+                                        onAddRequestHandled = { homeAddRequest = null }
                                     )
                                 }
 
                                 composable(
-                                    route = Screen.Templates.route,
-                                    enterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    exitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popEnterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popExitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    }
+                                    route = Screen.Templates.route
                                 ) {
                                     TemplatesScreen(
                                         shiftManager = shiftManager,
@@ -479,45 +589,35 @@ class MainActivity : ComponentActivity() {
                                 }
 
                                 composable(
-                                    route = Screen.Stats.route,
-                                    enterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    exitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popEnterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popExitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    }
+                                    route = Screen.Wallet.route
                                 ) {
-                                    StatsScreen(
+                                    WalletScreen(
                                         savedShifts = profileShifts,
-                                        onBackClick = { navController.popBackStack() },
+                                        ledger = profileLedger,
                                         currencyCode = selectedCurrencyCode,
-                                        onExport = { shown -> openExportSheet(ExportFormat.PDF, shown) },
                                         activeProfile = activeProfile,
-                                        onOpenProfiles = { showProfileSheet = true }
+                                        onOpenProfiles = { showProfileSheet = true },
+                                        onExport = { shown -> openExportSheet(ExportFormat.PDF, shown) },
+                                        onSaveEarning = { earning -> shiftManager.saveEarning(earning) },
+                                        onDeleteEarning = { id -> scope.launch { shiftManager.deleteEarning(id) } },
+                                        onAddPayment = { payment ->
+                                            shiftManager.addPayment(payment).also { problem ->
+                                                // Money arriving is a good moment, if any is.
+                                                if (problem == null) maybeAskForReview()
+                                            }
+                                        },
+                                        onDeletePayment = { id -> scope.launch { shiftManager.deletePayment(id) } },
+                                        weekStart = weekStartDay(startOfWeek),
+                                        onAddExpected = { lines -> shiftManager.addEarnings(lines) },
+                                        onSetShortfallAccepted = { id, accepted ->
+                                            scope.launch { shiftManager.setShortfallAccepted(id, accepted) }
+                                        }
                                     )
                                 }
 
 
                                 composable(
-                                    route = Screen.Settings.route,
-                                    enterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    exitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popEnterTransition = {
-                                        NavigationTransitions.getEnterTransition(initialState.destination.route, targetState.destination.route)
-                                    },
-                                    popExitTransition = {
-                                        NavigationTransitions.getExitTransition(initialState.destination.route, targetState.destination.route)
-                                    }
+                                    route = Screen.Settings.route
                                 ) {
                                     SettingsScreen(
                                         isDarkTheme = isDarkTheme,
@@ -550,6 +650,13 @@ class MainActivity : ComponentActivity() {
                                         onBackClick = { navController.popBackStack() },
                                         onExportPdf = { openExportSheet(ExportFormat.PDF, null) },
                                         onExportExcel = { openExportSheet(ExportFormat.EXCEL, null) },
+                                        onExportCalendar = { openExportSheet(ExportFormat.CALENDAR, null) },
+                                        restWarnings = restWarnings,
+                                        onRestWarningsChange = { enabled ->
+                                            scope.launch { shiftManager.saveRestWarnings(enabled) }
+                                        },
+                                        lastBackupAt = lastBackupAt,
+                                        hasData = savedShifts.isNotEmpty(),
                                         onBackupExport = {
                                             exportLauncher.launch(BackupHelper.generateBackupFileName())
                                         },
@@ -612,6 +719,8 @@ class MainActivity : ComponentActivity() {
                             BottomNavigationBar(
                                 currentRoute = currentRoute,
                                 onNavigate = { route ->
+                                    // Already there: nothing to navigate, nothing to animate.
+                                    if (route == currentRoute) return@BottomNavigationBar
                                     navController.navigate(route) {
                                         popUpTo(navController.graph.startDestinationId) {
                                             saveState = true
@@ -752,7 +861,7 @@ class MainActivity : ComponentActivity() {
                         if (showExportSheet) {
                             val shown = if (exportShownStart != null && exportShownEnd != null)
                                 ExportPeriod(
-                                    "Shown in Analytics",
+                                    "Shown in Insights",
                                     DateRange(
                                         java.time.LocalDate.parse(exportShownStart),
                                         java.time.LocalDate.parse(exportShownEnd)
@@ -776,8 +885,11 @@ class MainActivity : ComponentActivity() {
                                                 val name = ExportHelper.suggestFileName(
                                                     activeProfile.name, format.extension, period.range
                                                 )
-                                                if (format == ExportFormat.PDF) pdfExportLauncher.launch(name)
-                                                else excelExportLauncher.launch(name)
+                                                when (format) {
+                                                    ExportFormat.PDF -> pdfExportLauncher.launch(name)
+                                                    ExportFormat.EXCEL -> excelExportLauncher.launch(name)
+                                                    ExportFormat.CALENDAR -> calendarExportLauncher.launch(name)
+                                                }
                                             }
                                         }
                                     }
@@ -879,6 +991,42 @@ private fun popCustomShift(navController: androidx.navigation.NavController) {
     }
 }
 
+/** Intent actions of the launcher shortcuts in res/xml/shortcuts.xml. */
+internal object Shortcuts {
+    const val ADD_SHIFT = "com.leonidaskiachidis.shiftvault.action.ADD_SHIFT"
+    const val WALLET = "com.leonidaskiachidis.shiftvault.action.WALLET"
+    const val EXPORT = "com.leonidaskiachidis.shiftvault.action.EXPORT"
+}
+
+private class NavDestination(val label: String, @androidx.annotation.DrawableRes val icon: Int, val route: String)
+
+private val NavDestinations = listOf(
+    NavDestination("Home", R.drawable.ic_nav_home, Screen.Vault.route),
+    NavDestination("Shifts", R.drawable.ic_nav_shifts, Screen.Templates.route),
+    NavDestination("Wallet", R.drawable.ic_wallet, Screen.Wallet.route),
+    NavDestination("Settings", R.drawable.ic_nav_settings, Screen.Settings.route)
+)
+
+/**
+ * A tab's place in the bar, left to right, or -1 for anything that isn't a tab.
+ * The single ordering both the pill and the page slide take their direction from.
+ */
+internal fun navIndexOf(route: String?): Int = NavDestinations.indexOfFirst { it.route == route }
+
+/** Size of the pill that marks the current tab. */
+private val NavPillWidth = 64.dp
+private val NavPillHeight = 34.dp
+private val NavTopPadding = 10.dp
+
+// The pill's two ends travel on separate springs. The end facing the new tab
+// leads and the other follows, so the pill stretches towards where you're going
+// and gathers itself up on arrival. Both are critically damped: it lands
+// without wobbling, and a tap mid-flight simply re-aims both ends.
+private val NavLeadSpring = spring<Dp>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 800f)
+private val NavTrailSpring = spring<Dp>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 300f)
+/** How much the pill thins while fully stretched — it keeps its volume, like a drop. */
+private const val NavPillSquash = 0.16f
+
 @Composable
 fun BottomNavigationBar(
     currentRoute: String?,
@@ -888,9 +1036,18 @@ fun BottomNavigationBar(
     val isDark = AppTheme.accents.isDark
 
     // Curved shoulders on the left and right, sitting on its own surface so the
-    // curve actually reads against the page behind it. The old flat hairline
-    // separator is gone — the shape and the lift do that job now.
+    // curve actually reads against the page behind it.
     val shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
+
+    // While the shift form is over the tabs no tab route is current; the pill
+    // stays where it was instead of vanishing and flying back in.
+    val routeIndex = navIndexOf(currentRoute)
+    var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
+    var travelsRight by remember { mutableStateOf(true) }
+    if (routeIndex >= 0 && routeIndex != selectedIndex) {
+        travelsRight = routeIndex > selectedIndex
+        selectedIndex = routeIndex
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -901,66 +1058,136 @@ fun BottomNavigationBar(
         shadowElevation = if (isDark) 0.dp else 10.dp,
         border = if (isDark) BorderStroke(1.dp, cs.outline) else null
     ) {
-        Row(
-            modifier = Modifier
+        BoxWithConstraints(
+            Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(top = 12.dp, bottom = 10.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 8.dp)
         ) {
-            val items = listOf(
-                Triple("Home", AppIcons.Home, Screen.Vault.route),
-                Triple("Shifts", AppIcons.CalendarMonth, Screen.Templates.route),
-                Triple("Analytics", AppIcons.BarChart, Screen.Stats.route),
-                Triple("Settings", AppIcons.Settings, Screen.Settings.route)
+            val slot = maxWidth / NavDestinations.size
+            val center = slot * selectedIndex + slot / 2
+            val left = animateDpAsState(
+                targetValue = center - NavPillWidth / 2,
+                animationSpec = if (travelsRight) NavTrailSpring else NavLeadSpring,
+                label = "navPillLeft"
             )
-
-            items.forEach { (label, icon, route) ->
-                BottomNavItem(
-                    label = label,
-                    icon = icon,
-                    isSelected = currentRoute == route,
-                    onClick = { onNavigate(route) }
-                )
+            val right = animateDpAsState(
+                targetValue = center + NavPillWidth / 2,
+                animationSpec = if (travelsRight) NavLeadSpring else NavTrailSpring,
+                label = "navPillRight"
+            )
+            val pillColor = cs.primaryContainer
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .selectableGroup()
+                    // Read in the draw phase only: the glide redraws the bar,
+                    // it never recomposes or re-lays it out.
+                    .drawBehind {
+                        val l = left.value.toPx()
+                        val width = right.value.toPx() - l
+                        val stretch = (width / NavPillWidth.toPx() - 1f).coerceIn(0f, 1f)
+                        val height = NavPillHeight.toPx() * (1f - NavPillSquash * stretch)
+                        drawRoundRect(
+                            color = pillColor,
+                            topLeft = Offset(l, NavTopPadding.toPx() + (NavPillHeight.toPx() - height) / 2),
+                            size = Size(width, height),
+                            cornerRadius = CornerRadius(height / 2)
+                        )
+                    }
+            ) {
+                NavDestinations.forEachIndexed { index, destination ->
+                    BottomNavItem(
+                        label = destination.label,
+                        icon = destination.icon,
+                        isSelected = index == selectedIndex,
+                        onClick = { onNavigate(destination.route) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun BottomNavItem(
+private fun BottomNavItem(
     label: String,
-    icon: Painter,
+    @androidx.annotation.DrawableRes icon: Int,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
-    val tint = if (isSelected) cs.primary else cs.onSurfaceVariant
+    val isDark = AppTheme.accents.isDark
+    val motion = tween<Color>(220)
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+
+    // Unselected tabs are line drawings; the current one fills in with the
+    // theme colour, so the active tab is told by shape as well as by colour.
+    val outline by animateColorAsState(if (isSelected) cs.primary else cs.onSurfaceVariant, motion, label = "navOutline")
+    val fill by animateColorAsState(
+        if (isSelected) cs.primary.copy(alpha = if (isDark) 0.34f else 0.24f) else Color.Transparent,
+        motion, label = "navFill"
+    )
+    val accent by animateColorAsState(if (isSelected) cs.primary else Color.Transparent, motion, label = "navAccent")
+    // The darker container tone, not primary: it keeps the small label above
+    // 4.5:1 against the bar in every palette.
+    val labelColor by animateColorAsState(if (isSelected) cs.onPrimaryContainer else cs.onSurfaceVariant, motion, label = "navLabel")
+    // A press dips the icon before anything else happens, so the tap is felt
+    // even on the tab you're already on.
+    val scale by animateFloatAsState(
+        when {
+            pressed -> 0.86f
+            isSelected -> 1f
+            else -> 0.92f
+        },
+        spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium),
+        label = "navScale"
+    )
+    val halo by animateFloatAsState(if (pressed && !isSelected) 1f else 0f, tween(120), label = "navHalo")
+    val haloColor = cs.onSurface
 
     Column(
-        modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+        modifier = modifier
+            .selectable(
+                selected = isSelected,
+                role = Role.Tab,
+                interactionSource = interaction,
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(top = NavTopPadding, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(
-            painter = icon,
-            contentDescription = label,
-            tint = tint,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.height(6.dp))
+        Box(
+            Modifier
+                .size(NavPillWidth, NavPillHeight)
+                .drawBehind {
+                    if (halo > 0f) {
+                        drawRoundRect(
+                            haloColor.copy(alpha = 0.07f * halo),
+                            cornerRadius = CornerRadius(size.height / 2)
+                        )
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            ToneIcon(
+                id = icon,
+                contentDescription = null,
+                tones = IconTones(outline, fill, accent),
+                size = 24.dp,
+                modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = label,
-            color = tint,
-            fontSize = 12.sp,
-            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+            color = labelColor,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1
         )
     }
 }

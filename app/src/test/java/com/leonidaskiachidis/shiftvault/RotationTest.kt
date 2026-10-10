@@ -17,7 +17,8 @@ class RotationTest {
     fun presets_areWellFormed() {
         RotationPattern.Presets.forEach {
             assertTrue(it.name, it.length in 1..RotationPattern.MAX_LENGTH)
-            assertTrue(it.name, it.code.all { c -> c in "012" })
+            assertTrue(it.name, it.code.all { c -> c in "0123" })
+            assertTrue(it.name, it.description.isNotBlank())
         }
         assertEquals(14, RotationPattern.Presets.first { it.name.startsWith("2-2-3") }.length)
         assertEquals(28, RotationPattern.Presets.first { it.name == "DuPont" }.length)
@@ -94,6 +95,21 @@ class RotationTest {
             start, start.plusDays(7), RotationConflict.SKIP
         )
         assertEquals(RotationPreview(shiftsAdded = 3, daysSkipped = 1, daysReplaced = 0), p)
+    }
+
+    @Test
+    fun fill_usesSlotC_forTheThirdShift() {
+        val evening = Shift(name = "Evening", startTime = "15:00", endTime = "23:00", colorValue = 3)
+        val threeShift = RotationPattern.Presets.first { it.code == "1122330000" }
+        assertEquals(listOf(RotationSlot.A, RotationSlot.B, RotationSlot.C), threeShift.slotsUsed)
+        val result = RotationFill.apply(
+            emptyMap(), "job", threeShift,
+            mapOf(RotationSlot.A to day, RotationSlot.B to evening, RotationSlot.C to night),
+            start, start.plusDays(9), RotationConflict.SKIP
+        )
+        assertEquals(listOf("Day", "Day", "Evening", "Evening", "Night", "Night"),
+            (0L..5L).map { result.getValue(start.plusDays(it)).single().name })
+        assertEquals(6, result.size)
     }
 
     @Test

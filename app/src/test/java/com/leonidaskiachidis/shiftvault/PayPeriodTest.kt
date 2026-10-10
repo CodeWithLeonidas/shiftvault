@@ -33,6 +33,41 @@ class PayPeriodTest {
         assertEquals(DateRange(d(2026, 2, 28), d(2026, 3, 30)), p.periodContaining(d(2026, 3, 10)))
     }
 
+    // ── Home range (the browsed month) ──
+
+    @Test
+    fun homeRange_calendarMonth_isTheBrowsedMonth() {
+        val r = PayPeriod().homeRange(java.time.YearMonth.of(2026, 11), today = d(2026, 9, 24))
+        assertEquals(DateRange(d(2026, 11, 1), d(2026, 11, 30)), r)
+    }
+
+    @Test
+    fun homeRange_weeklyAndBiweekly_totalTheBrowsedMonth() {
+        val oct = java.time.YearMonth.of(2026, 10)
+        val month = DateRange(d(2026, 10, 1), d(2026, 10, 31))
+        assertEquals(month, PayPeriod(cycle = PayCycle.WEEKLY).homeRange(oct, d(2026, 9, 24)))
+        assertEquals(month, PayPeriod(cycle = PayCycle.BIWEEKLY).homeRange(oct, d(2026, 9, 24)))
+    }
+
+    @Test
+    fun homeRange_midMonthCycle_currentMonthIsTodaysPeriod_andEachMonthStepsOne() {
+        val p = PayPeriod(cycle = PayCycle.MONTHLY, startDay = 15)
+        val today = d(2026, 9, 24)
+        assertEquals(DateRange(d(2026, 9, 15), d(2026, 10, 14)), p.homeRange(java.time.YearMonth.of(2026, 9), today))
+        assertEquals(DateRange(d(2026, 10, 15), d(2026, 11, 14)), p.homeRange(java.time.YearMonth.of(2026, 10), today))
+        assertEquals(DateRange(d(2026, 7, 15), d(2026, 8, 14)), p.homeRange(java.time.YearMonth.of(2026, 7), today))
+    }
+
+    @Test
+    fun homeRange_startOn31st_neverRepeatsAPeriodAcrossShortMonths() {
+        val p = PayPeriod(cycle = PayCycle.MONTHLY, startDay = 31)
+        val today = d(2026, 1, 30)
+        val ranges = (0L..13L).map { p.homeRange(java.time.YearMonth.of(2026, 1).plusMonths(it), today) }
+        assertEquals(ranges.size, ranges.distinct().size)
+        // Consecutive months hand over without a gap or an overlap.
+        ranges.zipWithNext().forEach { (a, b) -> assertEquals(a.end.plusDays(1), b.start) }
+    }
+
     @Test
     fun monthlyAcrossNewYear() {
         val p = PayPeriod(cycle = PayCycle.MONTHLY, startDay = 20)

@@ -1,6 +1,18 @@
 package com.leonidaskiachidis.shiftvault
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -311,31 +323,59 @@ fun <T> SegmentedControl(
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
-    Row(
+    val gap = 4.dp
+    val index = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+
+    // One pill slides under the options instead of each option switching its
+    // own background, so the eye follows the choice from old to new.
+    BoxWithConstraints(
         modifier
             .fillMaxWidth()
             .clip(CircleShape)
             .background(cs.surfaceVariant)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(gap)
     ) {
-        options.forEach { (value, label) ->
-            val isSelected = value == selected
+        val segment = (maxWidth - gap * (options.size - 1)) / options.size
+        val offset by animateDpAsState(
+            targetValue = (segment + gap) * index,
+            animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+            label = "segmentIndicator"
+        )
+        Box(Modifier.matchParentSize()) {
             Box(
                 Modifier
-                    .weight(1f)
+                    .offset { IntOffset(offset.roundToPx(), 0) }
+                    .width(segment)
+                    .fillMaxHeight()
                     .clip(CircleShape)
-                    .background(if (isSelected) cs.primary else Color.Transparent)
-                    .clickable { if (!isSelected) onSelect(value) }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (isSelected) cs.onPrimary else cs.onSurfaceVariant,
-                    maxLines = 1
+                    .background(cs.primary)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            options.forEach { (value, label) ->
+                val isSelected = value == selected
+                val textColor by animateColorAsState(
+                    if (isSelected) cs.onPrimary else cs.onSurfaceVariant,
+                    tween(180),
+                    label = "segmentText"
                 )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(CircleShape)
+                        .selectable(selected = isSelected, role = Role.Tab) {
+                            if (!isSelected) onSelect(value)
+                        }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = textColor,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }
@@ -486,7 +526,7 @@ private fun AppUiKitPreview() {
             verticalArrangement = Arrangement.spacedBy(AppSpace.cardGap)
         ) {
             ScreenHeader(
-                title = "Analytics",
+                title = "Wallet",
                 subtitle = "Earnings & workload insights",
                 trailing = { PillButton(text = "Export", onClick = {}, icon = AppIcons.Upload) }
             )
@@ -521,7 +561,7 @@ private fun AppUiKitPreview() {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     SoftBadge("\$128.00", AppTheme.accents.morningSoft, AppTheme.accents.positive)
                     SoftBadge("\$165.00", AppTheme.accents.eveningSoft, MaterialTheme.colorScheme.onSurface)
-                    CircleIconButton(AppIcons.Settings, "Settings", {}, diameter = 40.dp, iconSize = 18.dp)
+                    CircleIconButton(AppIcons.NavSettings, "Settings", {}, diameter = 40.dp, iconSize = 18.dp)
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {

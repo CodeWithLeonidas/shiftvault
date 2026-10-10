@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcut icon: the app's own artwork on a white adaptive tile. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/white" />
+    <foreground>
+        <inset android:drawable="@drawable/ic_set_export_pdf" android:inset="30%" />
+    </foreground>
+</adaptive-icon>

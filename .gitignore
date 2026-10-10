@@ -12,3 +12,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Release signing credentials and keys - never committed.
+keystore.properties
+*.jks
+*.keystore

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the launcher icon. Handled in MainActivity (Shortcuts object). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="add_shift"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_add"
+        android:shortcutShortLabel="@string/shortcut_add_short"
+        android:shortcutLongLabel="@string/shortcut_add_long">
+        <intent
+            android:action="com.leonidaskiachidis.shiftvault.action.ADD_SHIFT"
+            android:targetPackage="com.leonidaskiachidis.shiftvault"
+            android:targetClass="com.leonidaskiachidis.shiftvault.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="wallet"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_wallet"
+        android:shortcutShortLabel="@string/shortcut_wallet_short"
+        android:shortcutLongLabel="@string/shortcut_wallet_long">
+        <intent
+            android:action="com.leonidaskiachidis.shiftvault.action.WALLET"
+            android:targetPackage="com.leonidaskiachidis.shiftvault"
+            android:targetClass="com.leonidaskiachidis.shiftvault.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="export"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_export"
+        android:shortcutShortLabel="@string/shortcut_export_short"
+        android:shortcutLongLabel="@string/shortcut_export_long">
+        <intent
+            android:action="com.leonidaskiachidis.shiftvault.action.EXPORT"
+            android:targetPackage="com.leonidaskiachidis.shiftvault"
+            android:targetClass="com.leonidaskiachidis.shiftvault.MainActivity" />
+    </shortcut>
+</shortcuts>

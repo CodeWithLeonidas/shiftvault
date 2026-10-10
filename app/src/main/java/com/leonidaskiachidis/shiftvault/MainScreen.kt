@@ -2,6 +2,14 @@ package com.leonidaskiachidis.shiftvault
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -9,7 +17,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -26,7 +33,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.PlatformTextStyle
@@ -36,10 +42,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -63,21 +65,6 @@ private val flatTextStyle = TextStyle(
 
 private val monthTitleFmt = DateTimeFormatter.ofPattern("MMMM")
 private val dayLabelFmt = DateTimeFormatter.ofPattern("EEEE, MMM d")
-
-/**
- * Swallows every scroll and fling the sheet body doesn't use, so the sheet's own
- * nested-scroll connection never sees leftover delta. The content scrolls to its
- * end without dragging the sheet, and only the handle/header can dismiss it.
- */
-internal val SheetScrollLock = object : NestedScrollConnection {
-    override fun onPostScroll(
-        consumed: Offset,
-        available: Offset,
-        source: NestedScrollSource
-    ): Offset = available
-
-    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity = available
-}
 
 internal fun shiftTimeLabel(shift: Shift): String =
     if (shift.startTime == "00:00" && shift.endTime == "23:59") "All day"
@@ -123,6 +110,16 @@ fun MainScreen(
     /** The app-wide selection. Every shift this screen writes is filed under it. */
     activeProfile: JobProfile = JobProfile.Default,
     onOpenProfiles: () -> Unit = {},
+    /** Opens the job profile editor on [activeProfile] (goals, deductions). */
+    onEditProfile: () -> Unit = {},
+    /** Mark days whose schedule leaves too little rest (Settings switch). */
+    restWarnings: Boolean = true,
+    /**
+     * A day to start adding a shift on — the "Add shift" launcher shortcut.
+     * Handled once, then reported back through [onAddRequestHandled].
+     */
+    addRequest: LocalDate? = null,
+    onAddRequestHandled: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -244,7 +241,7 @@ fun MainScreen(
     var showQuickSheet by rememberSaveable { mutableStateOf(false) }
     var showPickToPasteSheet by rememberSaveable { mutableStateOf(false) }
     var selectedDate by rememberSaveable { mutableStateOf<LocalDate?>(null) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberAppSheetState()
 
     // Bulk modes
     var clipboardShift by rememberSaveable(stateSaver = jsonSaver<Shift?>()) { mutableStateOf(null) }
@@ -258,6 +255,32 @@ fun MainScreen(
 
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
+
+    // Every job's shifts count towards rest; only days the active job works
+    // on are marked, so the calendar never flags a day it shows empty.
+    val restIssues = remember(savedShifts, startOfWeek, restWarnings) {
+        if (!restWarnings) emptyMap()
+        else RestCheck.issues(
+            savedShifts,
+            if (startOfWeek == "Sunday") java.time.DayOfWeek.SUNDAY else java.time.DayOfWeek.MONDAY
+        )
+    }
+
+    // The earnings strip's detail sheet, held as plain dates so it saves.
+    var summaryStart by rememberSaveable { mutableStateOf<String?>(null) }
+    var summaryEnd by rememberSaveable { mutableStateOf<String?>(null) }
+    val summarySheetState = rememberAppSheetState()
+
+    // The "Add shift" shortcut: the same as tapping that day on the calendar.
+    LaunchedEffect(addRequest) {
+        val date = addRequest ?: return@LaunchedEffect
+        val monthsAway = ChronoUnit.MONTHS.between(anchorMonth, YearMonth.from(date)).toInt()
+        pagerState.scrollToPage(startPage + monthsAway)
+        selectedDate = date
+        if ((visibleShifts[date] ?: emptyList()).isNotEmpty()) showDaySheet = true
+        else showAddSheet = true
+        onAddRequestHandled()
+    }
 
     val weekDays = remember(startOfWeek) {
         if (startOfWeek == "Sunday") listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
@@ -298,19 +321,22 @@ fun MainScreen(
                 )
             }
 
-            // ── Earnings: the pay period you are in ──
+            // ── Earnings for the month on screen ──
             //
             // Read from the on-screen map, so a pasted or erased day moves the
-            // figure on the same frame. Follows today, not the month being
-            // browsed: it answers "what will my next pay be?".
-            val payRange = remember(today, activeProfile.payPeriod) {
-                activeProfile.payPeriod.periodContaining(today)
-            }
-            val payTotals = remember(visibleShifts, payRange) { PeriodTotals.of(visibleShifts, payRange) }
-            EarningsStrip(
-                range = payRange.shortLabel(),
-                totals = payTotals,
+            // figure on the same frame. Follows the browsed month — see
+            // PayPeriod.homeRange for which days that means per pay cycle.
+            MonthEarnings(
+                month = { currentMonth },
+                today = today,
+                profile = activeProfile,
+                weekStart = weekStartDay(startOfWeek),
+                shifts = visibleShifts,
                 currencySymbol = currencySymbol,
+                onClick = { range ->
+                    summaryStart = range.start.toString()
+                    summaryEnd = range.end.toString()
+                },
                 modifier = Modifier
                     .padding(horizontal = AppSpace.screenH)
                     .padding(bottom = 8.dp)
@@ -347,7 +373,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        if (eraser) AppIcons.Delete else AppIcons.ContentCopy,
+                        if (eraser) AppIcons.Delete else AppIcons.Copy,
                         contentDescription = null, tint = accent, modifier = Modifier.size(16.dp)
                     )
                     Spacer(Modifier.width(10.dp))
@@ -455,6 +481,7 @@ fun MainScreen(
                                     inMonth = YearMonth.from(date) == monthForPage,
                                     isToday = date == today,
                                     dayShifts = visibleShifts[date] ?: emptyList(),
+                                    warn = date in restIssues && !visibleShifts[date].isNullOrEmpty(),
                                     gridLine = gridLine,
                                     weekendWash = weekendWash,
                                     isDark = isDark,
@@ -530,7 +557,6 @@ fun MainScreen(
             Column(
                 Modifier
                     .heightIn(max = 400.dp)
-                    .nestedScroll(SheetScrollLock)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -574,10 +600,14 @@ fun MainScreen(
         ) {
             Spacer(Modifier.height(18.dp))
 
+            restIssues[date]?.let { issues ->
+                RestWarnings(issues)
+                Spacer(Modifier.height(14.dp))
+            }
+
             Column(
                 Modifier
                     .heightIn(max = 400.dp)
-                    .nestedScroll(SheetScrollLock)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -642,11 +672,11 @@ fun MainScreen(
                     }
                 }
                 QuickAction(
-                    AppIcons.ContentCopy, "Copy a shift",
+                    AppIcons.Copy, "Copy a shift",
                     "Tap days to add it to each one", cs.primary
                 ) { scope.launch { sheetState.hide(); showQuickSheet = false; showPickToPasteSheet = true } }
                 QuickAction(
-                    AppIcons.DateRange, "Fill a rotation",
+                    AppIcons.Rotation, "Fill a rotation",
                     "Repeat a pattern like 4 on / 4 off", cs.primary
                 ) { scope.launch { sheetState.hide(); showQuickSheet = false; showRotation = true } }
                 QuickAction(
@@ -663,12 +693,36 @@ fun MainScreen(
         }
     }
 
+    val summaryRange = summaryStart?.let { start ->
+        summaryEnd?.let { end -> DateRange(LocalDate.parse(start), LocalDate.parse(end)) }
+    }
+    if (summaryRange != null) {
+        PeriodSummarySheet(
+            range = summaryRange,
+            today = today,
+            profile = activeProfile,
+            weekStart = weekStartDay(startOfWeek),
+            shifts = visibleShifts,
+            currencySymbol = currencySymbol,
+            sheetState = summarySheetState,
+            onEditProfile = {
+                scope.launch {
+                    summarySheetState.hide()
+                    summaryStart = null; summaryEnd = null
+                    onEditProfile()
+                }
+            },
+            onDismiss = { summaryStart = null; summaryEnd = null }
+        )
+    }
+
     if (showRotation) {
         RotationDialog(
             savedShifts = customTemplates,
             calendar = savedShifts,
             profileId = activeProfileId,
             today = today,
+            startOfWeek = startOfWeek,
             onApply = { pattern, slots, start, until, conflict ->
                 showRotation = false
                 applyWithUndo({ days -> "Rotation filled $days day${if (days == 1) "" else "s"}" }) { map ->
@@ -693,7 +747,6 @@ fun MainScreen(
                 Column(
                     Modifier
                         .heightIn(max = 400.dp)
-                        .nestedScroll(SheetScrollLock)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -715,12 +768,64 @@ fun MainScreen(
 //  Earnings strip
 // ══════════════════════════════════════════════════════════════
 
-/** One slim line: "Pay period · 15 Sep – 14 Oct ··· €1,024.00 · 96h". */
+/**
+ * The strip for the month on screen. Takes the month as a lambda, like the
+ * month bar pieces below, so a swipe recomposes only this strip.
+ */
+@Composable
+private fun MonthEarnings(
+    month: () -> YearMonth,
+    today: LocalDate,
+    profile: JobProfile,
+    weekStart: java.time.DayOfWeek,
+    shifts: Map<LocalDate, List<Shift>>,
+    currencySymbol: String,
+    onClick: (DateRange) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shown = month()
+    val payPeriod = profile.payPeriod
+    val range = remember(shown, today, payPeriod) { payPeriod.homeRange(shown, today) }
+    // Salary or shift pay, by the job's pay setup — the one calculation every
+    // screen uses, so Home, the Wallet and Insights can never disagree.
+    val totals = remember(profile, shifts, range, weekStart) { Compensation.totals(profile, shifts, range, weekStart) }
+    // The ring only appears where it means what it says: on a range that is
+    // itself one pay period, which is what a goal is set for.
+    val progress = remember(profile, totals, range, today) {
+        if (profile.hasGoal && payPeriod.goalRange(range, today) == range) {
+            GoalProgress.of(profile, totals).headline
+        } else null
+    }
+    // The month is already the calendar's title, so a calendar-month total is
+    // labelled by what it is, and only a period that runs across months
+    // spells out its dates.
+    val isWholeMonth = range.start.dayOfMonth == 1 &&
+            range.end == YearMonth.from(range.start).atEndOfMonth()
+    EarningsStrip(
+        title = if (isWholeMonth) "Month total" else "Pay period",
+        range = if (isWholeMonth) null else range.shortLabel(),
+        totals = totals,
+        currencySymbol = currencySymbol,
+        goalProgress = progress,
+        onClick = { onClick(range) },
+        modifier = modifier
+    )
+}
+
+/**
+ * One slim line: "Pay period  15 Sep – 14 Oct ··· €1,024.00 · 96h", or
+ * "Month total ··· €1,024.00 · 96h" when the range is the month on screen.
+ * With a goal set, a small ring in front fills as the period earns towards it.
+ * Tapping opens the period's summary: take-home, goals, hours.
+ */
 @Composable
 private fun EarningsStrip(
-    range: String,
+    title: String,
+    range: String?,
     totals: PeriodTotals,
     currencySymbol: String,
+    goalProgress: Double?,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
@@ -733,18 +838,23 @@ private fun EarningsStrip(
                 if (AppTheme.accents.isDark) Modifier.border(1.dp, cs.outline, CircleShape)
                 else Modifier
             )
+            .clickable(onClickLabel = "Show pay period summary", onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (goalProgress != null) {
+            GoalRing(goalProgress, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+        }
         Text(
-            "Pay period",
+            title,
             style = MaterialTheme.typography.labelMedium,
             color = cs.onSurface,
             maxLines = 1
         )
         Spacer(Modifier.width(6.dp))
         Text(
-            range,
+            range.orEmpty(),
             style = MaterialTheme.typography.labelSmall,
             color = cs.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -764,6 +874,265 @@ private fun EarningsStrip(
             color = cs.primary,
             maxLines = 1
         )
+    }
+}
+
+/** A thin progress ring; turns the success colour once the goal is reached. */
+@Composable
+private fun GoalRing(progress: Double, modifier: Modifier = Modifier, stroke: Dp = 3.dp) {
+    val cs = MaterialTheme.colorScheme
+    val reached = progress >= 1.0
+    val track = cs.outline
+    val fill = if (reached) AppTheme.accents.positive else cs.primary
+    val sweep by animateFloatAsState(
+        (progress.coerceIn(0.0, 1.0) * 360.0).toFloat(),
+        tween(600), label = "goalRing"
+    )
+    Canvas(modifier.semantics { contentDescription = "Goal ${(progress * 100).toInt()}% reached" }) {
+        val width = stroke.toPx()
+        val inset = width / 2
+        val arcSize = Size(size.width - width, size.height - width)
+        drawArc(track, 0f, 360f, false, Offset(inset, inset), arcSize, style = Stroke(width))
+        drawArc(fill, -90f, sweep, false, Offset(inset, inset), arcSize, style = Stroke(width, cap = StrokeCap.Round))
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Pay period summary
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * What a period adds up to: gross pay, the take-home estimate, hours, and how
+ * the job's goals are going. Goals are per pay period, so when the range on
+ * Home is a calendar month (weekly and two-weekly jobs) they are read against
+ * the pay period running today instead, and say so.
+ */
+@Composable
+private fun PeriodSummarySheet(
+    range: DateRange,
+    today: LocalDate,
+    profile: JobProfile,
+    weekStart: java.time.DayOfWeek,
+    shifts: Map<LocalDate, List<Shift>>,
+    currencySymbol: String,
+    sheetState: AppSheetState,
+    onEditProfile: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val pay = remember(profile, shifts, range, weekStart) { Compensation.forRange(profile, shifts, range, weekStart) }
+    val totals = remember(pay) { PeriodTotals(hours = pay.hoursWorked, earnings = pay.expectedCents / 100.0, shifts = pay.shiftsWorked) }
+    val goalRange = remember(profile.payPeriod, range, today) { profile.payPeriod.goalRange(range, today) }
+    val goalTotals = remember(profile, shifts, goalRange, weekStart) { Compensation.totals(profile, shifts, goalRange, weekStart) }
+    val money = { amount: Double -> "$currencySymbol${"%,.2f".format(amount)}" }
+
+    AppSheet(
+        onDismiss = onDismiss,
+        sheetState = sheetState,
+        title = range.label(),
+        caption = profile.name
+    ) {
+        Spacer(Modifier.height(18.dp))
+
+        // ── What it adds up to ──
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.large)
+                .background(cs.primaryContainer)
+                .padding(horizontal = 18.dp, vertical = 16.dp)
+        ) {
+            Text(
+                if (pay.mode == PayMode.FIXED_MONTHLY) "Expected pay" else "Earned",
+                style = MaterialTheme.typography.labelMedium,
+                color = cs.onPrimaryContainer
+            )
+            Text(
+                money(totals.earnings),
+                style = MaterialTheme.typography.headlineLarge,
+                color = cs.onSurface
+            )
+            if (profile.deductionPercent > 0.0) {
+                Text(
+                    "≈ ${money(profile.takeHome(totals.earnings))} take-home " +
+                        "after ${formatDecimalInput(profile.deductionPercent)}% deductions",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "${hoursLabel(totals.hours)} worked · ${totals.shifts} shift${if (totals.shifts == 1) "" else "s"}",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.primary
+            )
+        }
+
+        // ── How it is made up ──
+        Spacer(Modifier.height(14.dp))
+        PayBreakdown(pay, currencySymbol)
+
+        // ── Goals ──
+        if (profile.hasGoal) {
+            Spacer(Modifier.height(18.dp))
+            SheetLabel(
+                if (goalRange == range) "Goals"
+                else "Goals · this pay period, ${goalRange.shortLabel()}"
+            )
+            Spacer(Modifier.height(10.dp))
+            val progress = GoalProgress.of(profile, goalTotals)
+            progress.earnings?.let {
+                GoalBar(
+                    label = "${money(goalTotals.earnings)} of ${money(profile.earningsGoal)}",
+                    status = if (it >= 1.0) "Reached"
+                    else "${money(profile.earningsGoal - goalTotals.earnings)} to go",
+                    progress = it
+                )
+            }
+            if (progress.earnings != null && progress.hours != null) Spacer(Modifier.height(12.dp))
+            progress.hours?.let {
+                GoalBar(
+                    label = "${hoursLabel(goalTotals.hours)} of ${hoursLabel(profile.hoursGoal)}",
+                    status = if (it >= 1.0) "Reached"
+                    else "${hoursLabel(profile.hoursGoal - goalTotals.hours)} to go",
+                    progress = it
+                )
+            }
+        } else if (profile.deductionPercent <= 0.0) {
+            Spacer(Modifier.height(12.dp))
+            EmptyHint("Set an earnings or hours goal, or your deductions, to see progress and take-home pay here.")
+        }
+
+        Spacer(Modifier.height(18.dp))
+        SheetActionButton(
+            text = if (profile.hasGoal || profile.deductionPercent > 0.0) "Edit goals & deductions"
+            else "Set goals & deductions",
+            icon = AppIcons.Edit,
+            onClick = onEditProfile
+        )
+    }
+}
+
+@Composable
+private fun GoalBar(label: String, status: String, progress: Double) {
+    val cs = MaterialTheme.colorScheme
+    val reached = progress >= 1.0
+    val fill = if (reached) AppTheme.accents.positive else cs.primary
+    val shown by animateFloatAsState(progress.coerceIn(0.0, 1.0).toFloat(), tween(600), label = "goalBar")
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                color = cs.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Text(status, style = MaterialTheme.typography.labelMedium, color = if (reached) fill else cs.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(8.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(CircleShape)
+                .background(cs.surfaceVariant)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(shown)
+                    .fillMaxHeight()
+                    .clip(CircleShape)
+                    .background(fill)
+            )
+        }
+    }
+}
+
+/**
+ * A period's expected pay, line by line: the salary or regular pay, overtime
+ * (paid, banked or tracked), extras — then the hours behind it. Shared by
+ * Home's summary and the Wallet's period statement.
+ */
+@Composable
+internal fun PayBreakdown(pay: PeriodPay, currencySymbol: String) {
+    val cs = MaterialTheme.colorScheme
+    val money = { cents: Long -> formatCents(cents, currencySymbol) }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (pay.mode == PayMode.FIXED_MONTHLY) {
+            BreakdownLine(
+                "Base salary",
+                if (pay.salaryMissing && pay.baseCents == 0L) "Not set for this period" else money(pay.baseCents),
+                muted = pay.salaryMissing && pay.baseCents == 0L
+            )
+        } else {
+            BreakdownLine("Regular pay", money(pay.baseCents))
+        }
+        if (pay.overtimeHours > 0.0) {
+            val hours = hoursLabel(pay.overtimeHours)
+            when {
+                pay.overtimeUnvalued -> BreakdownLine("Overtime · $hours", "Set a reference rate to value it", muted = true)
+                pay.compensation == OvertimeCompensation.TIME_OFF ->
+                    BreakdownLine("Overtime · $hours", "${hoursLabel(pay.timeOffHours)} time off")
+                pay.compensation == OvertimeCompensation.TRACK_ONLY ->
+                    BreakdownLine("Overtime · $hours", "Tracked only", muted = true)
+                else -> BreakdownLine("Overtime · $hours", money(pay.overtimeCents ?: 0L))
+            }
+        }
+        if (pay.extrasCents > 0L) BreakdownLine("Bonuses & tips", money(pay.extrasCents))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(cs.outline.copy(alpha = 0.5f)))
+        BreakdownLine("Expected in total", money(pay.expectedCents), strong = true)
+        val notes = buildList {
+            if (pay.paidLeaveHours > 0.0) add("${hoursLabel(pay.paidLeaveHours)} paid leave")
+            if (pay.unpaidLeaveDays > 0) add("${pay.unpaidLeaveDays} unpaid day${if (pay.unpaidLeaveDays == 1) "" else "s"}")
+        }
+        if (notes.isNotEmpty()) {
+            Text(notes.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun BreakdownLine(label: String, value: String, muted: Boolean = false, strong: Boolean = false) {
+    val cs = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = if (strong) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyMedium,
+            color = cs.onSurface,
+            modifier = Modifier.weight(1f),
+            maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            value,
+            style = if (strong) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelLarge,
+            color = if (muted) cs.onSurfaceVariant else cs.onSurface,
+            maxLines = 1
+        )
+    }
+}
+
+/** The day sheet's explanation of why the day carries a warning dot. */
+@Composable
+private fun RestWarnings(issues: List<RestIssue>) {
+    val cs = MaterialTheme.colorScheme
+    val warning = AppTheme.accents.warning
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(warning.copy(alpha = 0.12f))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        issues.forEach { issue ->
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(AppIcons.Warning, null, tint = warning, modifier = Modifier.padding(top = 1.dp).size(16.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(issue.message, style = MaterialTheme.typography.bodySmall, color = cs.onSurface)
+            }
+        }
     }
 }
 
@@ -815,6 +1184,8 @@ private fun DayCell(
     inMonth: Boolean,
     isToday: Boolean,
     dayShifts: List<Shift>,
+    /** Draws the rest-warning dot. */
+    warn: Boolean,
     gridLine: Color,
     weekendWash: Color,
     isDark: Boolean,
@@ -847,6 +1218,15 @@ private fun DayCell(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+            if (warn) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 5.dp, y = (-1).dp)
+                        .size(7.dp)
+                        .background(AppTheme.accents.warning, CircleShape)
+                )
+            }
             if (isToday) {
                 Box(
                     Modifier
@@ -914,52 +1294,30 @@ private fun DayCell(
 //  Sheet shell & text
 // ══════════════════════════════════════════════════════════════
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The titled sheet most of the app uses: [AppBottomSheet] plus the standard
+ * title, caption and padding. Any part of it can be dragged to close it;
+ * scrolling lists inside cooperate with that on their own.
+ */
 @Composable
 internal fun AppSheet(
     onDismiss: () -> Unit,
-    sheetState: SheetState,
+    sheetState: AppSheetState,
     title: String,
     caption: String? = null,
     body: @Composable ColumnScope.() -> Unit
 ) {
-    val cs = MaterialTheme.colorScheme
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = cs.surface,
-        contentColor = cs.onSurface,
-        shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-        dragHandle = { SheetHandle() }
-    ) {
+    AppBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 22.dp)
                 .padding(bottom = 36.dp)
         ) {
-            // ── Draggable region: handle + title + date ──
             SheetTitle(title)
             if (caption != null) SheetCaption(caption)
-
-            // ── Everything below swallows vertical drags, so it can't move the sheet ──
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectVerticalDragGestures { _, _ -> /* consumed on purpose */ }
-                    },
-                content = body
-            )
+            body()
         }
-    }
-}
-
-@Composable
-private fun SheetHandle() {
-    val cs = MaterialTheme.colorScheme
-    Box(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
-        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(cs.outline))
     }
 }
 
@@ -1040,11 +1398,11 @@ private fun ShiftPickRow(shift: Shift, onClick: () -> Unit) {
             .clip(MaterialTheme.shapes.medium)
             .background(color.copy(alpha = 0.14f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(11.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(13.dp))
+        ShiftIcon(shift.name, shift.iconName, shift.colorValue, size = 36.dp)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 shift.name,
@@ -1094,19 +1452,19 @@ private fun NewShiftRow(onClick: () -> Unit) {
             .clip(MaterialTheme.shapes.medium)
             .background(cs.primaryContainer)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
-                .size(24.dp)
+                .size(36.dp)
                 .clip(CircleShape)
                 .background(cs.primary.copy(alpha = 0.18f)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(AppIcons.Add, null, tint = cs.primary, modifier = Modifier.size(15.dp))
+            Icon(AppIcons.Add, null, tint = cs.primary, modifier = Modifier.size(18.dp))
         }
-        Spacer(Modifier.width(13.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 "New shift",
@@ -1133,7 +1491,6 @@ private fun NewShiftRow(onClick: () -> Unit) {
 private fun DayShiftRow(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
-    val color = rememberShiftAccent(shift.colorValue)
     val hours = remember(shift) { PayEngine.payableHours(shift) }
     val detail = remember(shift) {
         val base = when (shift.dayType) {
@@ -1154,11 +1511,11 @@ private fun DayShiftRow(shift: Shift, onEdit: () -> Unit, onDelete: () -> Unit) 
             .clip(MaterialTheme.shapes.large)
             .background(cs.background)
             .border(1.dp, cs.outline, MaterialTheme.shapes.large)
-            .padding(start = 14.dp, end = 12.dp, top = 14.dp, bottom = 14.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(11.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(13.dp))
+        ShiftIcon(shift.name, shift.iconName, shift.colorValue, size = 40.dp)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 shift.name,

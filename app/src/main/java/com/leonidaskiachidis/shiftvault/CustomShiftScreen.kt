@@ -11,6 +11,24 @@ package com.leonidaskiachidis.shiftvault
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,19 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.layout.offset
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.unit.IntOffset
-import androidx.core.graphics.ColorUtils
-import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -138,6 +144,9 @@ fun CustomShiftScreen(
     var endTime by rememberSaveable { mutableStateOf(DEFAULT_END_TIME) }
     var dayType by rememberSaveable { mutableStateOf(DayType.WORKED) }
     var paidBreak by rememberSaveable { mutableStateOf(false) }
+    // Progressive disclosure: most shifts have no break worth setting, so the
+    // section starts folded. Its header still shows a break that is set.
+    var breakExpanded by rememberSaveable { mutableStateOf(false) }
     var multiplier by rememberSaveable { mutableDoubleStateOf(PayMultipliers.NORMAL) }
     var selectedColorValue by rememberSaveable { mutableLongStateOf(ShiftColors.Palette[0].toArgb().toLong()) }
     var showCustomColor by rememberSaveable { mutableStateOf(false) }
@@ -145,11 +154,13 @@ fun CustomShiftScreen(
     // switching to a preset and back does not throw the choice away.
     var customColorValue by rememberSaveable { mutableStateOf<Long?>(null) }
 
-    // Carried through untouched — no control on this screen.
-    var carriedIconName by rememberSaveable { mutableStateOf<String?>(null) }
+    // Null means the default mark: the first letter of the name.
+    var iconName by rememberSaveable { mutableStateOf<String?>(null) }
+    var showIconPicker by rememberSaveable { mutableStateOf(false) }
     // A new shift belongs to the job you are on; an edit keeps the job it was
     // filed under, even if you have since switched profiles.
     var carriedJobId by rememberSaveable { mutableStateOf(activeProfile.id) }
+    val salaried = activeProfile.pay.isFixed
 
     // Both prefill effects below run once per form, not once per composition:
     // after a rotation they would otherwise overwrite what the user has typed
@@ -197,7 +208,7 @@ fun CustomShiftScreen(
             if (shift.paidLeaveHours % 1.0 == 0.0) shift.paidLeaveHours.toInt().toString()
             else shift.paidLeaveHours.toString()
         } else "8"
-        carriedIconName = shift.iconName
+        iconName = shift.iconName
         carriedJobId = shift.jobId ?: activeProfile.id
     }
 
@@ -262,7 +273,7 @@ fun CustomShiftScreen(
             name = name.trim(),
             location = location.trim(),
             notes = note,
-            iconName = carriedIconName,
+            iconName = iconName,
             jobId = carriedJobId
         )
         scope.launch {
@@ -343,12 +354,18 @@ fun CustomShiftScreen(
                     )
                 }
             }
+            val saveContainer by animateColorAsState(
+                if (canSave) cs.primary else cs.surfaceVariant, tween(180), label = "saveContainer"
+            )
+            val saveContent by animateColorAsState(
+                if (canSave) cs.onPrimary else cs.onSurfaceVariant, tween(180), label = "saveContent"
+            )
             Surface(
                 onClick = { if (canSave) save() },
                 enabled = canSave,
                 shape = CircleShape,
-                color = if (canSave) cs.primary else cs.surfaceVariant,
-                contentColor = if (canSave) cs.onPrimary else cs.onSurfaceVariant,
+                color = saveContainer,
+                contentColor = saveContent,
                 shadowElevation = 0.dp
             ) {
                 Text(
@@ -378,6 +395,16 @@ fun CustomShiftScreen(
                     placeholder = "e.g. Barista Shift",
                     singleLine = true
                 )
+                Spacer(Modifier.height(12.dp))
+                IconField(
+                    name = name,
+                    iconName = iconName,
+                    colorValue = selectedColorValue,
+                    onClick = {
+                        keyboard?.hide(); focusManager.clearFocus(force = true)
+                        showIconPicker = true
+                    }
+                )
                 Spacer(Modifier.height(22.dp))
                 FieldLabel("Color")
                 Spacer(Modifier.height(12.dp))
@@ -398,150 +425,157 @@ fun CustomShiftScreen(
             FormCard {
                 FieldLabel("Day type")
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    when (dayType) {
-                        DayType.WORKED -> "Time on the clock, paid by the hour."
-                        DayType.PAID_LEAVE -> "Away but still paid — annual leave, sick leave, a paid public holiday."
-                        DayType.UNPAID_LEAVE -> "Away and not paid. Logged for the record, earns nothing."
+                // The line underneath changes length with the choice, so it
+                // crossfades and the card eases to its new height.
+                AnimatedContent(
+                    targetState = dayType,
+                    transitionSpec = {
+                        fadeIn(tween(180, delayMillis = 60)) togetherWith fadeOut(tween(100)) using
+                            SizeTransform(clip = false) { _, _ -> tween(220, easing = FastOutSlowInEasing) }
                     },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = cs.onSurfaceVariant
-                )
+                    label = "dayTypeHint"
+                ) { type ->
+                    Text(
+                        when (type) {
+                            DayType.WORKED -> "Time on the clock, paid by the hour."
+                            DayType.PAID_LEAVE -> "Away but still paid — annual leave, sick leave, a paid public holiday."
+                            DayType.UNPAID_LEAVE -> "Away and not paid. Logged for the record, earns nothing."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Spacer(Modifier.height(14.dp))
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(CircleShape)
-                        .background(cs.surfaceVariant)
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    DayType.entries.forEach { type ->
-                        val selected = type == dayType
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .clip(CircleShape)
-                                .background(if (selected) cs.primary else Color.Transparent)
-                                .clickable { dayType = type }
-                                .padding(vertical = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                dayTypeLabel(type),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) cs.onPrimary else cs.onSurfaceVariant,
-                                maxLines = 1
-                            )
+                SegmentedControl(
+                    options = DayType.entries.map { it to dayTypeLabel(it) },
+                    selected = dayType,
+                    onSelect = { dayType = it }
+                )
+
+                // Each block carries its own leading space, so nothing is left
+                // behind to jump when it leaves.
+                AnimatedVisibility(visible = isWorked, enter = FormMotion.enter, exit = FormMotion.exit) {
+                    Column {
+                        Spacer(Modifier.height(20.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            TimeField("Start", startTime, Modifier.weight(1f)) {
+                                keyboard?.hide(); focusManager.clearFocus(force = true)
+                                pickingStart = true; showTimePicker = true
+                            }
+                            TimeField("End", endTime, Modifier.weight(1f)) {
+                                keyboard?.hide(); focusManager.clearFocus(force = true)
+                                pickingStart = false; showTimePicker = true
+                            }
                         }
+                        Spacer(Modifier.height(12.dp))
+                        BreakSection(
+                            expanded = breakExpanded,
+                            onToggle = {
+                                if (breakExpanded) { keyboard?.hide(); focusManager.clearFocus(force = true) }
+                                breakExpanded = !breakExpanded
+                            },
+                            breakText = breakText,
+                            onBreakText = { breakText = it },
+                            paidBreak = paidBreak,
+                            onPaidBreak = { paidBreak = it }
+                        )
                     }
                 }
-
-                if (isWorked) {
-                    Spacer(Modifier.height(20.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        TimeField("Start", startTime, Modifier.weight(1f)) {
-                            keyboard?.hide(); focusManager.clearFocus(force = true)
-                            pickingStart = true; showTimePicker = true
-                        }
-                        TimeField("End", endTime, Modifier.weight(1f)) {
-                            keyboard?.hide(); focusManager.clearFocus(force = true)
-                            pickingStart = false; showTimePicker = true
-                        }
+                AnimatedVisibility(
+                    visible = dayType == DayType.PAID_LEAVE,
+                    enter = FormMotion.enter, exit = FormMotion.exit
+                ) {
+                    Column {
+                        Spacer(Modifier.height(20.dp))
+                        FieldLabel("Paid hours credited")
+                        Spacer(Modifier.height(10.dp))
+                        FormTextField(
+                            value = paidLeaveText,
+                            onValueChange = { paidLeaveText = it },
+                            placeholder = "8",
+                            singleLine = true,
+                            keyboardType = KeyboardType.Decimal,
+                            suffix = "hours"
+                        )
                     }
-
-                    Spacer(Modifier.height(18.dp))
-                    FieldLabel("Break", optional = true)
-                    Spacer(Modifier.height(10.dp))
-                    FormTextField(
-                        value = breakText,
-                        onValueChange = { breakText = it },
-                        placeholder = "0",
-                        singleLine = true,
-                        keyboardType = KeyboardType.Number,
-                        suffix = "min"
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    ToggleRow(
-                        title = "Paid break",
-                        subtitle = if (paidBreak) "Break counts as worked time"
-                        else "Break is deducted from worked time",
-                        checked = paidBreak
-                    ) { paidBreak = it }
-                } else if (dayType == DayType.PAID_LEAVE) {
-                    Spacer(Modifier.height(20.dp))
-                    FieldLabel("Paid hours credited")
-                    Spacer(Modifier.height(10.dp))
-                    FormTextField(
-                        value = paidLeaveText,
-                        onValueChange = { paidLeaveText = it },
-                        placeholder = "8",
-                        singleLine = true,
-                        keyboardType = KeyboardType.Decimal,
-                        suffix = "hours"
-                    )
                 }
             }
 
             // ── Pay ──
-            if (isPaid) {
-                Spacer(Modifier.height(AppSpace.cardGap))
-                FormCard {
-                    FieldLabel("Hourly rate", optional = true)
-                    Spacer(Modifier.height(10.dp))
-                    FormTextField(
-                        value = rateText,
-                        onValueChange = { rateText = it },
-                        placeholder = "0.00",
-                        singleLine = true,
-                        keyboardType = KeyboardType.Decimal,
-                        prefix = currencySymbol,
-                        suffix = "/hr"
-                    )
+            AnimatedVisibility(visible = isPaid, enter = FormMotion.enter, exit = FormMotion.exit) {
+                Column {
+                    Spacer(Modifier.height(AppSpace.cardGap))
+                    FormCard {
+                        // A salaried job is paid by the month: a rate per shift
+                        // would mean nothing, so the form doesn't ask for one.
+                        if (salaried) {
+                            Text(
+                                "Paid by your monthly salary, so this shift needs no rate. " +
+                                    "Its hours still count, and a multiplier below marks it as overtime.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurfaceVariant
+                            )
+                        } else {
+                            FieldLabel("Hourly rate", optional = true)
+                            Spacer(Modifier.height(10.dp))
+                            FormTextField(
+                                value = rateText,
+                                onValueChange = { rateText = it },
+                                placeholder = "0.00",
+                                singleLine = true,
+                                keyboardType = KeyboardType.Decimal,
+                                prefix = currencySymbol,
+                                suffix = "/hr"
+                            )
+                        }
 
-                    if (isWorked) {
+                        AnimatedVisibility(visible = isWorked, enter = FormMotion.enter, exit = FormMotion.exit) {
+                            Column {
+                                Spacer(Modifier.height(22.dp))
+                                FieldLabel("Rate multiplier")
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "For overtime, Sundays, night shifts or working a public holiday.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = cs.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    MultiplierPresets.forEach { preset ->
+                                        FilterPill(
+                                            text = preset.label,
+                                            selected = multiplier == preset.value,
+                                            onClick = { multiplier = preset.value }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         Spacer(Modifier.height(22.dp))
-                        FieldLabel("Rate multiplier")
+                        FieldLabel("Bonus", optional = true)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "For overtime, Sundays, night shifts or working a public holiday.",
+                            "Tips, travel allowance, or any flat extra for this shift.",
                             style = MaterialTheme.typography.bodySmall,
                             color = cs.onSurfaceVariant
                         )
-                        Spacer(Modifier.height(12.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            MultiplierPresets.forEach { preset ->
-                                FilterPill(
-                                    text = preset.label,
-                                    selected = multiplier == preset.value,
-                                    onClick = { multiplier = preset.value }
-                                )
-                            }
-                        }
+                        Spacer(Modifier.height(10.dp))
+                        FormTextField(
+                            value = bonusText,
+                            onValueChange = { bonusText = it },
+                            placeholder = "0.00",
+                            singleLine = true,
+                            keyboardType = KeyboardType.Decimal,
+                            prefix = currencySymbol
+                        )
                     }
-
-                    Spacer(Modifier.height(22.dp))
-                    FieldLabel("Bonus", optional = true)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Tips, travel allowance, or any flat extra for this shift.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = cs.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    FormTextField(
-                        value = bonusText,
-                        onValueChange = { bonusText = it },
-                        placeholder = "0.00",
-                        singleLine = true,
-                        keyboardType = KeyboardType.Decimal,
-                        prefix = currencySymbol
-                    )
                 }
             }
 
@@ -570,13 +604,26 @@ fun CustomShiftScreen(
 
             // ── Live summary ──
             Spacer(Modifier.height(AppSpace.cardGap))
-            SummaryCard(draft = draft, currencySymbol = currencySymbol)
+            SummaryCard(draft = draft, currencySymbol = currencySymbol, pay = activeProfile.pay)
         }
     }
 
+    if (showIconPicker) {
+        IconPickerSheet(
+            name = name,
+            colorValue = selectedColorValue,
+            selected = iconName,
+            sections = ShiftIconCatalog.forShifts,
+            onPick = { iconName = it; showIconPicker = false },
+            onDismiss = { showIconPicker = false }
+        )
+    }
+
     if (showCustomColor) {
-        CustomColorDialog(
+        CustomColorSheet(
             initial = Color((customColorValue ?: selectedColorValue).toInt()),
+            previewName = name,
+            previewIcon = iconName,
             onDismiss = { showCustomColor = false },
             onPick = {
                 val value = it.toArgb().toLong()
@@ -619,6 +666,116 @@ fun CustomShiftScreen(
 //  Form building blocks
 // ══════════════════════════════════════════════════════════════
 
+/**
+ * How optional parts of the form come and go: the space opens first and the
+ * content fades in just behind it, and on the way out the content goes first
+ * so nothing is seen being squashed. Quick enough to never hold the user up.
+ */
+internal object FormMotion {
+    val enter: EnterTransition =
+        expandVertically(tween(240, easing = FastOutSlowInEasing), expandFrom = Alignment.Top) +
+            fadeIn(tween(180, delayMillis = 60))
+    val exit: ExitTransition =
+        fadeOut(tween(110)) +
+            shrinkVertically(tween(220, easing = FastOutSlowInEasing), shrinkTowards = Alignment.Top)
+}
+
+/**
+ * Break minutes and whether they are paid, folded behind one header row. The
+ * header says what is set, so a folded section never hides a real value.
+ */
+@Composable
+private fun BreakSection(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    breakText: String,
+    onBreakText: (String) -> Unit,
+    paidBreak: Boolean,
+    onPaidBreak: (Boolean) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val minutes = breakText.trim().toIntOrNull()?.takeIf { it > 0 }
+    val summary = when {
+        minutes == null -> "No break"
+        paidBreak -> "$minutes min · paid"
+        else -> "$minutes min · unpaid"
+    }
+    val chevronTurn by animateFloatAsState(
+        if (expanded) 180f else 0f, tween(240, easing = FastOutSlowInEasing), label = "breakChevron"
+    )
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(cs.background)
+            .border(1.dp, cs.outline, MaterialTheme.shapes.medium)
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .clickable(
+                    onClickLabel = if (expanded) "Hide break" else "Set a break",
+                    onClick = onToggle
+                )
+                .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+                .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier.size(36.dp).clip(CircleShape).background(cs.primary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(AppIcons.Break, null, tint = cs.primary, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                FieldLabel("Break", optional = true)
+                Spacer(Modifier.height(2.dp))
+                AnimatedContent(
+                    targetState = summary,
+                    transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+                    label = "breakSummary"
+                ) { text ->
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (minutes == null) cs.onSurfaceVariant else cs.primary,
+                        maxLines = 1
+                    )
+                }
+            }
+            Icon(
+                AppIcons.ChevronDown, null,
+                tint = cs.onSurfaceVariant,
+                modifier = Modifier.size(20.dp).rotate(chevronTurn)
+            )
+        }
+
+        AnimatedVisibility(visible = expanded, enter = FormMotion.enter, exit = FormMotion.exit) {
+            Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp)) {
+                FormTextField(
+                    value = breakText,
+                    onValueChange = onBreakText,
+                    placeholder = "0",
+                    singleLine = true,
+                    keyboardType = KeyboardType.Number,
+                    suffix = "min"
+                )
+                Spacer(Modifier.height(10.dp))
+                ToggleRow(
+                    title = "Paid break",
+                    subtitle = if (paidBreak) "Break counts as worked time"
+                    else "Break is deducted from worked time",
+                    checked = paidBreak,
+                    onCheckedChange = onPaidBreak
+                )
+            }
+        }
+    }
+}
+
 @Composable
 internal fun FormCard(content: @Composable ColumnScope.() -> Unit) {
     SoftCard(
@@ -632,14 +789,22 @@ internal fun FormCard(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 internal fun FieldLabel(text: String, optional: Boolean = false) {
     val cs = MaterialTheme.colorScheme
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(text, style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+    // Baseline, not Bottom: the two styles have different line heights, so
+    // aligning their boxes' bottoms left "optional" sitting below the title.
+    Row {
+        Text(
+            text,
+            style = MaterialTheme.typography.titleSmall,
+            color = cs.onSurface,
+            modifier = Modifier.alignByBaseline()
+        )
         if (optional) {
             Spacer(Modifier.width(6.dp))
             Text(
                 "optional",
                 style = MaterialTheme.typography.labelSmall,
-                color = cs.onSurfaceVariant
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.alignByBaseline()
             )
         }
     }
@@ -692,295 +857,6 @@ internal fun FormTextField(
 }
 
 @Composable
-private fun ColorPicker(
-    selected: Long,
-    custom: Long?,
-    onSelect: (Long) -> Unit,
-    onCustom: () -> Unit
-) {
-    val customColor = remember(custom) { custom?.let { Color(it.toInt()) } }
-    val isCustomSelected = custom != null && custom == selected
-
-    // Thirteen presets plus the custom slot fill two clean rows of seven.
-    val rows = remember { ShiftColors.Palette.chunked(7) }
-
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        rows.forEachIndexed { rowIndex, row ->
-            val isLastRow = rowIndex == rows.lastIndex
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                row.forEach { c ->
-                    val v = c.toArgb().toLong()
-                    Swatch(
-                        color = c,
-                        isSelected = v == selected,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onSelect(v) }
-                    )
-                }
-                if (isLastRow) {
-                    CustomSwatch(
-                        color = customColor,
-                        isSelected = isCustomSelected,
-                        modifier = Modifier.weight(1f),
-                        onClick = onCustom
-                    )
-                }
-                // Keeps the last row aligned to the same 7-column rhythm.
-                val used = row.size + if (isLastRow) 1 else 0
-                repeat(7 - used) { Spacer(Modifier.weight(1f)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Swatch(
-    color: Color,
-    isSelected: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier
-            .aspectRatio(1f)
-            .clip(CircleShape)
-            .then(if (isSelected) Modifier.border(2.5.dp, color, CircleShape) else Modifier)
-            .clickable(onClick = onClick)
-            .padding(if (isSelected) 4.dp else 1.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(Modifier.fillMaxSize().background(color, CircleShape))
-    }
-}
-
-/**
- * The fourteenth slot. Empty it shows a hue wheel and a plus; once a custom
- * colour is in play it behaves exactly like any other swatch, so the custom
- * colour reads as part of the palette rather than as a separate feature.
- */
-@Composable
-private fun CustomSwatch(
-    color: Color?,
-    isSelected: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit
-) {
-    val cs = MaterialTheme.colorScheme
-    val wheel = remember {
-        Brush.sweepGradient(ShiftColors.Palette + ShiftColors.Palette.first())
-    }
-    Box(
-        modifier
-            .aspectRatio(1f)
-            .clip(CircleShape)
-            .then(
-                if (isSelected && color != null)
-                    Modifier.border(2.5.dp, color, CircleShape)
-                else Modifier
-            )
-            .clickable(onClick = onClick)
-            .padding(if (isSelected) 4.dp else 1.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        if (color != null) {
-            Box(Modifier.fillMaxSize().background(color, CircleShape))
-        } else {
-            Box(
-                Modifier.fillMaxSize().background(wheel, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxSize(0.52f)
-                        .background(cs.surface, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        AppIcons.Add, "Custom color",
-                        tint = cs.onSurface,
-                        modifier = Modifier.fillMaxSize(0.72f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════
-//  Custom colour
-// ════════════════════════════════════════════════════════════
-
-private fun Color.toHsl(): FloatArray =
-    FloatArray(3).also { ColorUtils.colorToHSL(toArgb(), it) }
-
-private fun hsl(h: Float, s: Float, l: Float): Color =
-    Color(ColorUtils.HSLToColor(floatArrayOf(h.coerceIn(0f, 360f), s, l)))
-
-@Composable
-private fun CustomColorDialog(
-    initial: Color,
-    onDismiss: () -> Unit,
-    onPick: (Color) -> Unit
-) {
-    val cs = MaterialTheme.colorScheme
-
-    val start = remember(initial) { initial.toHsl() }
-    var hue by remember(initial) { mutableFloatStateOf(start[0]) }
-    var saturation by remember(initial) { mutableFloatStateOf(start[1]) }
-    var lightness by remember(initial) { mutableFloatStateOf(start[2]) }
-
-    val color = remember(hue, saturation, lightness) { hsl(hue, saturation, lightness) }
-    val hex = remember(color) { "#%06X".format(color.toArgb() and 0xFFFFFF) }
-    val onSwatch = if (lightness > 0.55f) Color(0xFF1A1A1A) else Color.White
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = MaterialTheme.shapes.extraLarge,
-        containerColor = cs.surface,
-        title = {
-            Text("Custom color", style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
-        },
-        text = {
-            Column(Modifier.fillMaxWidth()) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(76.dp)
-                        .clip(MaterialTheme.shapes.medium)
-                        .background(color)
-                        .border(1.dp, cs.outline, MaterialTheme.shapes.medium),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(hex, style = MaterialTheme.typography.titleMedium, color = onSwatch)
-                }
-
-                Spacer(Modifier.height(20.dp))
-                SliderLabel("Hue")
-                GradientSlider(
-                    value = hue / 360f,
-                    thumbColor = color,
-                    trackColors = remember(saturation, lightness) {
-                        List(13) {
-                            hsl(
-                                it * 30f,
-                                saturation.coerceAtLeast(0.35f),
-                                lightness.coerceIn(0.35f, 0.65f)
-                            )
-                        }
-                    },
-                    onValueChange = { hue = it * 360f }
-                )
-
-                Spacer(Modifier.height(14.dp))
-                SliderLabel("Saturation")
-                GradientSlider(
-                    value = saturation,
-                    thumbColor = color,
-                    trackColors = remember(hue, lightness) {
-                        listOf(hsl(hue, 0f, lightness), hsl(hue, 1f, lightness))
-                    },
-                    onValueChange = { saturation = it }
-                )
-
-                Spacer(Modifier.height(14.dp))
-                SliderLabel("Lightness")
-                GradientSlider(
-                    value = lightness,
-                    thumbColor = color,
-                    trackColors = remember(hue, saturation) {
-                        listOf(
-                            hsl(hue, saturation, 0.06f),
-                            hsl(hue, saturation, 0.5f),
-                            hsl(hue, saturation, 0.94f)
-                        )
-                    },
-                    onValueChange = { lightness = it }
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onPick(color) },
-                shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(containerColor = cs.primary)
-            ) { Text("Use color", style = MaterialTheme.typography.labelLarge) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
-}
-
-@Composable
-private fun SliderLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-}
-
-/**
- * A track painted with the outcome of the axis it controls, so the choice is
- * made by looking rather than by reading numbers. Hand-rolled rather than a
- * Material Slider purely so the track can *be* the gradient.
- */
-@Composable
-private fun GradientSlider(
-    value: Float,
-    thumbColor: Color,
-    trackColors: List<Color>,
-    onValueChange: (Float) -> Unit
-) {
-    val cs = MaterialTheme.colorScheme
-    val thumbSize = 24.dp
-    val density = LocalDensity.current
-    var widthPx by remember { mutableFloatStateOf(0f) }
-    val thumbPx = with(density) { thumbSize.toPx() }
-    val travel = (widthPx - thumbPx).coerceAtLeast(1f)
-
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(thumbSize + 12.dp)
-            .onSizeChanged { widthPx = it.width.toFloat() }
-            .pointerInput(Unit) {
-                // One gesture loop handles both a tap and a drag, so the track
-                // responds on touch-down instead of waiting for slop.
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val span = (size.width - thumbPx).coerceAtLeast(1f)
-                    fun fractionAt(x: Float) = ((x - thumbPx / 2f) / span).coerceIn(0f, 1f)
-                    onValueChange(fractionAt(down.position.x))
-                    drag(down.id) { change ->
-                        onValueChange(fractionAt(change.position.x))
-                        change.consume()
-                    }
-                }
-            },
-        contentAlignment = Alignment.CenterStart
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(14.dp)
-                .clip(CircleShape)
-                .background(Brush.horizontalGradient(trackColors))
-                .border(1.dp, cs.outline, CircleShape)
-        )
-        Box(
-            Modifier
-                .offset { IntOffset((value.coerceIn(0f, 1f) * travel).roundToInt(), 0) }
-                .size(thumbSize)
-                .shadow(3.dp, CircleShape)
-                .background(Color.White, CircleShape)
-                .border(3.dp, thumbColor, CircleShape)
-        )
-    }
-}
-
-@Composable
 private fun TimeField(
     label: String,
     value: String,
@@ -1006,7 +882,7 @@ private fun TimeField(
                 modifier = Modifier.weight(1f)
             )
             Icon(
-                AppIcons.Schedule, null,
+                AppIcons.Clock, null,
                 tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp)
             )
         }
@@ -1058,24 +934,32 @@ private fun ToggleRow(
 }
 
 @Composable
-private fun SummaryCard(draft: Shift, currencySymbol: String) {
+private fun SummaryCard(draft: Shift, currencySymbol: String, pay: PaySetup = PaySetup()) {
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
 
     val payableHours = PayEngine.payableHours(draft)
-    val earnings = PayEngine.earnings(draft)
     val grossSpan = PayEngine.grossSpanHours(draft)
     val multiplierActive = PayEngine.effectiveMultiplier(draft) != 1.0
+    // On a salary a shift earns nothing by itself — only marked overtime,
+    // valued at the reference rate, and its bonus come on top.
+    val markedOvertime = pay.isFixed && multiplierActive && PayEngine.isWorked(draft) &&
+        pay.overtimeSource == OvertimeSource.MARKED_SHIFTS && pay.overtimeCompensation == OvertimeCompensation.PAID
+    val earnings = if (pay.isFixed) {
+        (if (markedOvertime) PayEngine.workedHours(draft) * pay.referenceHourlyRate * PayEngine.effectiveMultiplier(draft) else 0.0) +
+            (if (draft.dayType == DayType.UNPAID_LEAVE) 0.0 else draft.bonus)
+    } else PayEngine.earnings(draft)
 
     Column(
         Modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.large)
             .background(cs.primary.copy(alpha = 0.10f))
+            .animateContentSize(tween(220, easing = FastOutSlowInEasing))
             .padding(20.dp)
     ) {
         Text(
-            "This shift is worth",
+            if (pay.isFixed) "On top of your salary" else "This shift is worth",
             style = MaterialTheme.typography.labelLarge,
             color = cs.onSurfaceVariant
         )

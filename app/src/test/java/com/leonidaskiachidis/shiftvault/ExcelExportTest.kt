@@ -66,6 +66,28 @@ class ExcelExportTest {
     }
 
     @Test
+    fun `a salaried report totals the salary, not the shifts`() {
+        val job = JobProfile(
+            id = JobProfile.DEFAULT_ID, name = "Office", colorValue = 0,
+            pay = PaySetup(mode = PayMode.FIXED_MONTHLY, salaryHistory = listOf(SalaryRate(null, 130_000)))
+        )
+        val shifts = sampleShifts()
+        val range = DateRange(shifts.keys.min(), shifts.keys.max())
+        val pay = Compensation.forRange(job, shifts, range)
+        val bytes = ByteArrayOutputStream().also {
+            ExportHelper.exportShiftsToExcel(shifts, it, meta.copy(pay = pay))
+        }.toByteArray()
+        XSSFWorkbook(ByteArrayInputStream(bytes)).use { wb ->
+            val summary = wb.getSheet("Summary")
+            val labels = (0..summary.lastRowNum).mapNotNull { summary.getRow(it)?.getCell(0)?.stringCellValue }
+            assertTrue("Base salary" in labels)
+            assertTrue("Total expected" in labels)
+            val totalRow = (0..summary.lastRowNum).first { summary.getRow(it)?.getCell(0)?.stringCellValue == "Total expected" }
+            assertEquals(pay.expectedCents / 100.0, summary.getRow(totalRow).getCell(1).numericCellValue, 1e-9)
+        }
+    }
+
+    @Test
     fun `report round-trips and opens on the summary sheet`() {
         writeAndReopen(sampleShifts()).use { wb ->
             assertEquals("Summary", wb.getSheetAt(0).sheetName)

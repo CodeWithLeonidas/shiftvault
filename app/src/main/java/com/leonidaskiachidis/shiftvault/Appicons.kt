@@ -5,64 +5,71 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
 
 /**
- * Every icon the app draws, resolved from res/drawable.
- *
- * Replaces androidx.compose.material:material-icons-extended (~1k vectors) with
- * the 35 we actually use. Each property is a @Composable getter, so call sites
- * read exactly like the old Icons.Default.X did:
+ * Every icon the app draws, resolved from res/drawable. Each property is a
+ * @Composable getter, so call sites read like the old Icons.Default.X did:
  *
  *     Icon(AppIcons.Add, null, Modifier.size(18.dp), tint = cs.primary)
+ *
+ * Two families:
+ *  - UI glyphs (ic_ui_*) — single-colour line marks: chevrons, close, check.
+ *    Tinted the ordinary way.
+ *  - Tone icons — the three-tone illustrations. Drawn through [TonePainter],
+ *    which repaints their fixed colours from the tint (see ToneIcons.kt).
  */
 object AppIcons {
 
-    // ── Actions ──
-    val Add: Painter          @Composable get() = painterResource(R.drawable.ic_add)
-    val Close: Painter        @Composable get() = painterResource(R.drawable.ic_close)
-    val Delete: Painter       @Composable get() = painterResource(R.drawable.ic_delete)
-    val Edit: Painter         @Composable get() = painterResource(R.drawable.ic_edit)
-    val ContentCopy: Painter  @Composable get() = painterResource(R.drawable.ic_content_copy)
-    val MoreHoriz: Painter    @Composable get() = painterResource(R.drawable.ic_more_horiz)
-    val Check: Painter        @Composable get() = painterResource(R.drawable.ic_check)
-    val Search: Painter       @Composable get() = painterResource(R.drawable.ic_search)
-    val Filters: Painter      @Composable get() = painterResource(R.drawable.ic_filters)
-
-    // ── Navigation ──
-    val ChevronLeft: Painter  @Composable get() = painterResource(R.drawable.ic_chevron_left)
-    val ChevronRight: Painter @Composable get() = painterResource(R.drawable.ic_chevron_right)
+    // ── UI glyphs ──
+    val Add: Painter          @Composable get() = painterResource(R.drawable.ic_ui_add)
+    val Close: Painter        @Composable get() = painterResource(R.drawable.ic_ui_close)
+    val Check: Painter        @Composable get() = painterResource(R.drawable.ic_ui_check)
+    val Search: Painter       @Composable get() = painterResource(R.drawable.ic_ui_search)
+    val Filters: Painter      @Composable get() = painterResource(R.drawable.ic_ui_filter)
+    val ChevronLeft: Painter  @Composable get() = painterResource(R.drawable.ic_ui_chevron_left)
+    val ChevronRight: Painter @Composable get() = painterResource(R.drawable.ic_ui_chevron_right)
+    val ChevronDown: Painter  @Composable get() = painterResource(R.drawable.ic_ui_chevron_down)
+    val Download: Painter     @Composable get() = painterResource(R.drawable.ic_ui_download)
+    val Upload: Painter       @Composable get() = painterResource(R.drawable.ic_ui_upload)
+    val Warning: Painter      @Composable get() = painterResource(R.drawable.ic_ui_warning)
 
     // ── Bottom bar ──
-    val Home: Painter          @Composable get() = painterResource(R.drawable.ic_home)
-    val CalendarMonth: Painter @Composable get() = painterResource(R.drawable.ic_calendar_month)
-    val Shift: Painter         @Composable get() = painterResource(R.drawable.ic_shift)
-    val BarChart: Painter      @Composable get() = painterResource(R.drawable.ic_bar_chart)
-    val Settings: Painter      @Composable get() = painterResource(R.drawable.ic_settings)
+    val NavHome: Painter      @Composable get() = rememberTonePainter(R.drawable.ic_nav_home)
+    val NavShifts: Painter    @Composable get() = rememberTonePainter(R.drawable.ic_nav_shifts)
+    val NavAnalytics: Painter @Composable get() = rememberTonePainter(R.drawable.ic_nav_analytics)
+    val NavSettings: Painter  @Composable get() = rememberTonePainter(R.drawable.ic_nav_settings)
 
-    // ── Calendar / time ──
-    val Today: Painter        @Composable get() = painterResource(R.drawable.ic_today)
-    val Schedule: Painter     @Composable get() = painterResource(R.drawable.ic_schedule)
-    val EventNote: Painter    @Composable get() = painterResource(R.drawable.ic_event_note)
-    val DateRange: Painter    @Composable get() = painterResource(R.drawable.ic_date_range)
-    val EditCalendar: Painter @Composable get() = painterResource(R.drawable.ic_edit_calendar)
-    val Place: Painter        @Composable get() = painterResource(R.drawable.ic_place)
+    // ── Calendar actions ──
+    val Copy: Painter         @Composable get() = rememberTonePainter(R.drawable.ic_action_copy)
+    val Delete: Painter       @Composable get() = rememberTonePainter(R.drawable.ic_action_delete)
+    val EditCalendar: Painter @Composable get() = rememberTonePainter(R.drawable.ic_action_edit_calendar)
+    val Rotation: Painter     @Composable get() = rememberTonePainter(R.drawable.ic_action_rotation)
+    val Today: Painter        @Composable get() = rememberTonePainter(R.drawable.ic_action_today)
+    val Edit: Painter         @Composable get() = rememberTonePainter(R.drawable.ic_edit)
+
+    // ── Calendar, time, money ──
+    val Calendar: Painter     @Composable get() = rememberTonePainter(R.drawable.ic_calendar)
+    val Clock: Painter        @Composable get() = rememberTonePainter(R.drawable.ic_clock)
+    val Break: Painter        @Composable get() = rememberTonePainter(R.drawable.ic_break)
+    val Location: Painter     @Composable get() = rememberTonePainter(R.drawable.ic_location)
+    val Wallet: Painter       @Composable get() = rememberTonePainter(R.drawable.ic_wallet)
+    val Statistics: Painter   @Composable get() = rememberTonePainter(R.drawable.ic_statistics)
+    val Vacation: Painter     @Composable get() = rememberTonePainter(R.drawable.ic_vacation)
+    val TimeOff: Painter      @Composable get() = rememberTonePainter(R.drawable.ic_time_off)
 
     // ── Settings ──
-    val DarkMode: Painter     @Composable get() = painterResource(R.drawable.ic_dark_mode)
-    val LightMode: Painter    @Composable get() = painterResource(R.drawable.ic_light_mode)
-    val Palette: Painter      @Composable get() = painterResource(R.drawable.ic_palette)
-    val Payments: Painter     @Composable get() = painterResource(R.drawable.ic_payments)
-    val Save: Painter         @Composable get() = painterResource(R.drawable.ic_save)
-    val Download: Painter     @Composable get() = painterResource(R.drawable.ic_download)
-    val Upload: Painter       @Composable get() = painterResource(R.drawable.ic_upload)
-    val PictureAsPdf: Painter @Composable get() = painterResource(R.drawable.ic_picture_as_pdf)
-    val TableChart: Painter   @Composable get() = painterResource(R.drawable.ic_table_chart)
-    val Share: Painter        @Composable get() = painterResource(R.drawable.ic_share)
-    val Star: Painter         @Composable get() = painterResource(R.drawable.ic_star)
-    val Email: Painter        @Composable get() = painterResource(R.drawable.ic_email)
-    val PrivacyTip: Painter   @Composable get() = painterResource(R.drawable.ic_privacy_tip)
-    val NewReleases: Painter  @Composable get() = painterResource(R.drawable.ic_new_releases)
-    val Warning: Painter      @Composable get() = painterResource(R.drawable.ic_warning)
-
-    // ── Stats ──
-    val BeachAccess: Painter  @Composable get() = painterResource(R.drawable.ic_beach_access)
-    val Weekend: Painter      @Composable get() = painterResource(R.drawable.ic_weekend)
+    val SetAbout: Painter          @Composable get() = rememberTonePainter(R.drawable.ic_set_about)
+    val SetBackup: Painter         @Composable get() = rememberTonePainter(R.drawable.ic_set_backup)
+    val SetContact: Painter        @Composable get() = rememberTonePainter(R.drawable.ic_set_contact)
+    val SetCurrency: Painter       @Composable get() = rememberTonePainter(R.drawable.ic_set_currency)
+    val SetDailyLog: Painter       @Composable get() = rememberTonePainter(R.drawable.ic_set_daily_log)
+    val SetExportExcel: Painter    @Composable get() = rememberTonePainter(R.drawable.ic_set_export_excel)
+    val SetExportPdf: Painter      @Composable get() = rememberTonePainter(R.drawable.ic_set_export_pdf)
+    val SetPrivacy: Painter        @Composable get() = rememberTonePainter(R.drawable.ic_set_privacy)
+    val SetRate: Painter           @Composable get() = rememberTonePainter(R.drawable.ic_set_rate)
+    val SetReminderShift: Painter  @Composable get() = rememberTonePainter(R.drawable.ic_set_reminder_shift)
+    val SetReminderTime: Painter   @Composable get() = rememberTonePainter(R.drawable.ic_set_reminder_time)
+    val SetShare: Painter          @Composable get() = rememberTonePainter(R.drawable.ic_set_share)
+    val SetTheme: Painter          @Composable get() = rememberTonePainter(R.drawable.ic_set_theme)
+    val SetThemeMode: Painter      @Composable get() = rememberTonePainter(R.drawable.ic_set_theme_mode)
+    val SetWeekStart: Painter      @Composable get() = rememberTonePainter(R.drawable.ic_set_week_start)
+    val SetWhatsNew: Painter       @Composable get() = rememberTonePainter(R.drawable.ic_set_whats_new)
 }

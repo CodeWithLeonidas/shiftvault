@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -5,6 +7,26 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.room)
 }
+
+/*
+ * Release signing. The credentials live in keystore.properties at the project
+ * root, which is git-ignored and never committed:
+ *
+ *   storeFile=/absolute/or/project-relative/path/to/release.jks
+ *   storePassword=...
+ *   keyAlias=...
+ *   keyPassword=...
+ *
+ * Without that file the release build is signed with the local debug key, so
+ * it still installs for on-device testing (and over an installed debug build,
+ * keeping its data) - but it is not a build to publish.
+ */
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
+val hasReleaseKeystore = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { !keystoreProperties.getProperty(it).isNullOrBlank() }
 
 android {
     namespace = "com.leonidaskiachidis.shiftvault"
@@ -24,8 +46,28 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "ShiftVault: no keystore.properties - the release build is signed with " +
+                        "the debug key. Fine for testing on your own device; not for publishing."
+                )
+                signingConfigs.getByName("debug")
+            }
             // R8: strips unused code and resources (most of Compose's size in
             // a debug build) and obfuscates. Room, kotlinx.serialization and
             // the other libraries ship their own keep rules; the app has no
@@ -77,6 +119,8 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.work.runtime.ktx)
+    // Google Play in-app review: the rating card shown inside the app.
+    implementation(libs.play.review)
     testImplementation(libs.junit)
     // Test-only: the unit tests open every workbook XlsxWriter produces with
     // POI, so a malformed file fails the build. Not shipped in the APK.

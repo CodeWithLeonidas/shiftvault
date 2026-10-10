@@ -107,6 +107,31 @@ data class PayPeriod(
         }
     }
 
+    /**
+     * The days Home totals while [month] is on screen.
+     *
+     * A monthly cycle that starts mid-month gets its real pay period: the
+     * current month shows the period today is in, and each month away steps
+     * one period further. Stepping (rather than looking up a date in [month])
+     * gives every month exactly one period of its own even when the cycle
+     * starts on the 29th–31st, where short months would otherwise repeat one.
+     *
+     * Everything else totals the calendar month itself: a calendar-month cycle
+     * already is one, and a weekly or two-weekly cycle has four or five periods
+     * in a month, none of which stands for the month on screen.
+     */
+    fun homeRange(month: YearMonth, today: LocalDate): DateRange {
+        if (cycle != PayCycle.MONTHLY || startDay <= 1) {
+            return DateRange(month.atDay(1), month.atEndOfMonth())
+        }
+        val steps = ChronoUnit.MONTHS.between(YearMonth.from(today), month)
+        var range = periodContaining(today)
+        repeat(kotlin.math.abs(steps).toInt()) {
+            range = if (steps > 0) next(range) else previous(range)
+        }
+        return range
+    }
+
     fun previous(range: DateRange): DateRange = periodContaining(range.start.minusDays(1))
 
     fun next(range: DateRange): DateRange = periodContaining(range.end.plusDays(1))
@@ -158,3 +183,28 @@ data class PeriodTotals(val hours: Double, val earnings: Double, val shifts: Int
         }
     }
 }
+
+/**
+ * How far a period's [PeriodTotals] are towards a job's goals, as fractions
+ * (1.0 = reached; can run past it). Null for a goal that isn't set.
+ */
+data class GoalProgress(val earnings: Double?, val hours: Double?) {
+    /** The figure a single ring shows: earnings when set, else hours. */
+    val headline: Double? get() = earnings ?: hours
+
+    companion object {
+        fun of(profile: JobProfile, totals: PeriodTotals) = GoalProgress(
+            earnings = profile.earningsGoal.takeIf { it > 0.0 }?.let { totals.earnings / it },
+            hours = profile.hoursGoal.takeIf { it > 0.0 }?.let { totals.hours / it }
+        )
+    }
+}
+
+/**
+ * The pay period goals are measured over while Home totals [shown]: [shown]
+ * itself when it is exactly one pay period (monthly cycles), otherwise the
+ * period [today] falls in — weekly and two-weekly jobs show a calendar month
+ * on Home, and a per-payslip goal can't be read against a month.
+ */
+fun PayPeriod.goalRange(shown: DateRange, today: LocalDate): DateRange =
+    periodContaining(shown.start).takeIf { it == shown } ?: periodContaining(today)

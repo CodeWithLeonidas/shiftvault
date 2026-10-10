@@ -24,7 +24,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.Serializable
@@ -35,7 +34,9 @@ import java.time.YearMonth
 @Serializable
 enum class ExportFormat(val label: String, val extension: String, val mimeType: String) {
     PDF("PDF", "pdf", "application/pdf"),
-    EXCEL("Excel", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    EXCEL("Excel", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    /** An .ics file of the shifts themselves, for any calendar app. */
+    CALENDAR("Calendar", "ics", "text/calendar")
 }
 
 @Serializable
@@ -65,13 +66,22 @@ data class ExportRequest(
 
 /**
  * The periods offered, most useful first. [shown] — the period open in
- * Analytics — leads the list when the sheet was opened from there.
+ * Analytics — leads the list when the sheet was opened from there. A calendar
+ * export is about what's ahead, so it starts with the coming year's shifts.
  */
-fun exportPeriodChoices(pay: PayPeriod, today: LocalDate, shown: ExportPeriod?): List<ExportPeriod> {
+fun exportPeriodChoices(
+    pay: PayPeriod,
+    today: LocalDate,
+    shown: ExportPeriod?,
+    format: ExportFormat = ExportFormat.PDF
+): List<ExportPeriod> {
     val thisPay = pay.periodContaining(today)
     val thisMonth = YearMonth.from(today)
     val year = Year.from(today)
+    val upcoming = ExportPeriod("Upcoming shifts", DateRange(today, today.plusYears(1)))
+        .takeIf { format == ExportFormat.CALENDAR }
     val choices = listOfNotNull(
+        upcoming,
         shown,
         ExportPeriod("This pay period", thisPay),
         ExportPeriod("Last pay period", pay.previous(thisPay)),
@@ -90,17 +100,19 @@ fun ExportSheet(
     profile: JobProfile,
     initialFormat: ExportFormat,
     shownPeriod: ExportPeriod?,
-    sheetState: SheetState,
+    sheetState: AppSheetState,
     onExport: (ExportFormat, ExportPeriod, ExportAction) -> Unit,
     onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val choices = remember(profile.payPeriod, shownPeriod) {
-        exportPeriodChoices(profile.payPeriod, LocalDate.now(), shownPeriod)
-    }
     var format by rememberSaveable { mutableStateOf(initialFormat) }
-    var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
-    val selected = choices.getOrElse(selectedIndex) { choices.first() }
+    val choices = remember(profile.payPeriod, shownPeriod, format) {
+        exportPeriodChoices(profile.payPeriod, LocalDate.now(), shownPeriod, format)
+    }
+    // Picked by name, not position: the calendar format adds a period in
+    // front, and switching format must not quietly move the selection.
+    var selectedTitle by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = choices.firstOrNull { it.title == selectedTitle } ?: choices.first()
 
     AppSheet(
         onDismiss = onDismiss,
@@ -123,12 +135,11 @@ fun ExportSheet(
         Column(
             Modifier
                 .heightIn(max = 340.dp)
-                .nestedScroll(SheetScrollLock)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            choices.forEachIndexed { i, period ->
-                PeriodRow(period, selected = i == selectedIndex) { selectedIndex = i }
+            choices.forEach { period ->
+                PeriodRow(period, selected = period == selected) { selectedTitle = period.title }
             }
         }
 
@@ -150,7 +161,7 @@ fun ExportSheet(
                 color = cs.primary,
                 contentColor = cs.onPrimary
             ) {
-                ActionLabel(AppIcons.Share, "Share")
+                ActionLabel(AppIcons.SetShare, "Share")
             }
         }
     }
