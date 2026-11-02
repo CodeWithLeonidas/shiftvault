@@ -60,7 +60,7 @@ object AppSpace {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  SoftCard — the white rounded container used everywhere
+//  SoftCard — the rounded, hairline-edged container used everywhere
 // ══════════════════════════════════════════════════════════════
 
 @Composable
@@ -74,22 +74,18 @@ fun SoftCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val stroke = when {
-        showBorder -> BorderStroke(1.dp, cs.outline)
-        // A drop shadow is invisible against a dark background, which left cards
-        // and page merging into one flat surface. The outline does that job.
-        AppTheme.accents.isDark -> BorderStroke(1.dp, cs.outline)
-        else -> null
-    }
+    // The redesign separates by a soft hairline rather than a shadow, on light
+    // and dark alike; [elevation] stays for callers that still pass it.
+    val stroke = if (showBorder) BorderStroke(1.dp, cs.outline) else BorderStroke(HairlineWidth, cs.softEdge)
 
     if (onClick != null) {
         Surface(
             onClick = onClick,
             modifier = modifier,
             shape = shape,
-            color = cs.surface,
+            color = cs.background,
             contentColor = cs.onSurface,
-            shadowElevation = elevation,
+            shadowElevation = 0.dp,
             border = stroke
         ) {
             Column(modifier = Modifier.padding(contentPadding), content = content)
@@ -98,9 +94,9 @@ fun SoftCard(
         Surface(
             modifier = modifier,
             shape = shape,
-            color = cs.surface,
+            color = cs.background,
             contentColor = cs.onSurface,
-            shadowElevation = elevation,
+            shadowElevation = 0.dp,
             border = stroke
         ) {
             Column(modifier = Modifier.padding(contentPadding), content = content)

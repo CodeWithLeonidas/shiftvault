@@ -74,7 +74,7 @@ object CalendarExport {
         val details = buildList {
             add(profileName)
             when (shift.dayType) {
-                DayType.WORKED -> add(hoursLabel(PayEngine.workedHours(shift)))
+                DayType.WORKED -> add(hoursLabel(PayEngine.workedHours(shift)) + if (shift.isExtra) " · extra hours" else "")
                 DayType.PAID_LEAVE -> add("Paid leave")
                 DayType.UNPAID_LEAVE -> add("Unpaid leave")
             }

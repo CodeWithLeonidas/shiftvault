@@ -33,6 +33,9 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.migration.AutoMigrationSpec
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 
@@ -61,7 +64,11 @@ data class ShiftColumns(
     val location: String,
     val jobId: String,
     val notes: String,
-    val iconName: String?
+    val iconName: String?,
+    /** Added in version 4. */
+    @ColumnInfo(defaultValue = "0") val isExtra: Boolean = false,
+    /** Added in version 4; only meaningful on the calendar. */
+    @ColumnInfo(defaultValue = "0") val extraPaid: Boolean = false
 )
 
 /** A shift on a calendar day. [position] keeps the order they were added in. */
@@ -275,13 +282,33 @@ interface LedgerDao {
         CalendarShiftEntity::class, SavedShiftEntity::class, MetaEntity::class,
         EarningEntity::class, PaymentEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)]
+    autoMigrations = [
+        AutoMigration(from = 1, to = 2),
+        AutoMigration(from = 2, to = 3),
+        AutoMigration(from = 3, to = 4, spec = ShiftDatabase.ExtraFlagSpec::class)
+    ]
 )
 abstract class ShiftDatabase : RoomDatabase() {
     abstract fun dao(): ShiftDao
     abstract fun ledger(): LedgerDao
+
+    /**
+     * Version 4 adds the Extra switch. Shifts saved before it existed told
+     * extra hours by the "1.5× OT" and "2× Double" presets, so those are marked
+     * Extra once here — the same rule as Shift.withLegacyExtraFlag(). Their
+     * multiplier is untouched, so no pay changes.
+     */
+    class ExtraFlagSpec : AutoMigrationSpec {
+        override fun onPostMigrate(connection: SQLiteConnection) {
+            for (table in listOf("calendar_shifts", "saved_shifts")) {
+                connection.execSQL(
+                    "UPDATE `$table` SET isExtra = 1 WHERE dayType = 'WORKED' AND payMultiplier IN (1.5, 2.0)"
+                )
+            }
+        }
+    }
 
     companion object {
         /** Set once the shifts stored in DataStore have been copied in. */
@@ -322,7 +349,9 @@ internal fun Shift.toColumns(): ShiftColumns {
         location = s.location,
         jobId = s.jobId ?: JobProfile.DEFAULT_ID,
         notes = s.notes,
-        iconName = s.iconName
+        iconName = s.iconName,
+        isExtra = s.isExtra,
+        extraPaid = s.extraPaid
     )
 }
 
@@ -341,7 +370,9 @@ internal fun ShiftColumns.toShift(): Shift = Shift(
     location = location,
     jobId = jobId,
     notes = notes,
-    iconName = iconName
+    iconName = iconName,
+    isExtra = isExtra,
+    extraPaid = extraPaid
 )
 
 internal fun calendarRows(date: LocalDate, shifts: List<Shift>): List<CalendarShiftEntity> =

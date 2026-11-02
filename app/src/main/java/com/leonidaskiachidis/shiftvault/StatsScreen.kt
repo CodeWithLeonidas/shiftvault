@@ -95,6 +95,8 @@ internal fun InsightsPane(
     activeProfile: JobProfile = JobProfile.Default,
     /** The calendar's first day, for weekly overtime. */
     weekStart: java.time.DayOfWeek = java.time.DayOfWeek.MONDAY,
+    /** When given, the period and Export go to the host's header instead of the list. */
+    header: InsightsHeaderState? = null,
     modifier: Modifier = Modifier
 ) {
     // Saveable (java.time types are Serializable), so the period the user
@@ -291,7 +293,7 @@ internal fun InsightsPane(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // ── Scope: which period, and getting it out as a report ──
-            item(key = "scope") {
+            if (header == null) item(key = "scope") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -316,23 +318,13 @@ internal fun InsightsPane(
             }
 
             // ── Tabs: pinned while their content scrolls beneath ──
+            if (header != null) item(key = "scopeGap") { Spacer(Modifier.height(4.dp)) }
             stickyHeader(key = "tabs") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(cs.background)
-                        .horizontalScroll(rememberScrollState())
-                        .padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    StatsTab.entries.forEach { t ->
-                        FilterPill(
-                            text = t.label,
-                            selected = t == tab,
-                            onClick = { tab = t }
-                        )
-                    }
-                }
+                UnderlineTabs(
+                    options = StatsTab.entries.map { it to it.label },
+                    selected = tab,
+                    onSelect = { tab = it }
+                )
             }
 
             when (tab) {
@@ -598,6 +590,16 @@ internal fun InsightsPane(
     // ══════════════════════════════════════════════════════════
     //  Period sheet
     // ══════════════════════════════════════════════════════════
+    if (header != null) {
+        // Handed up every composition, so the header always shows and acts
+        // on the period currently on screen.
+        SideEffect {
+            header.periodLabel = periodLabel
+            header.onPickPeriod = { showPeriodSheet = true }
+            header.onExport = { onExport(ExportPeriod("Shown in Insights", DateRange(periodStart, periodEnd))) }
+        }
+    }
+
     if (showPeriodSheet) {
         StatsSheet(
             onDismiss = { showPeriodSheet = false },
@@ -816,21 +818,22 @@ internal fun StatsCard(
     val cs = MaterialTheme.colorScheme
     SoftCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
                     title,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     color = cs.onSurface,
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 if (subtitle != null) {
-                    Spacer(Modifier.height(3.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodySmall,
                         color = cs.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
@@ -1737,4 +1740,14 @@ private fun shortMoney(symbol: String, value: Double): String = when {
         if (k == floor(k)) symbol + "%.0f".format(k) + "k" else symbol + "%.1f".format(k) + "k"
     }
     else -> symbol + "%.0f".format(value)
+}
+/**
+ * What Insights hands to the screen hosting it: the period on show, and the
+ * actions to change it or export it, for the host to place in its header.
+ */
+@Stable
+internal class InsightsHeaderState {
+    var periodLabel by mutableStateOf("")
+    var onPickPeriod: () -> Unit by mutableStateOf({})
+    var onExport: () -> Unit by mutableStateOf({})
 }

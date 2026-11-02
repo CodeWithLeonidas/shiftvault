@@ -126,8 +126,9 @@ class ShiftManager(private val context: Context) {
             if (dao.meta(ShiftDatabase.META_IMPORTED_FROM_DATASTORE) != null) return@withTransaction
             dao.clearCalendar()
             dao.clearSaved()
-            dao.insertCalendar(shifts.flatMap { (date, list) -> calendarRows(date, list) })
-            dao.insertSaved(savedRows(templates))
+            // These predate the Extra switch: the old presets decide it.
+            dao.insertCalendar(shifts.flatMap { (date, list) -> calendarRows(date, list.map { it.withLegacyExtraFlag() }) })
+            dao.insertSaved(savedRows(templates.map { it.withLegacyExtraFlag() }))
             dao.putMeta(MetaEntity(ShiftDatabase.META_IMPORTED_FROM_DATASTORE, System.currentTimeMillis().toString()))
         }
     }
@@ -606,6 +607,7 @@ class ShiftManager(private val context: Context) {
             templates = templates,
             profiles = profiles,
             activeProfileId = preferences[ACTIVE_PROFILE_KEY] ?: profiles.first().id,
+            extraFlagged = true,
             ledgerIncluded = true,
             earnings = ledger.earnings().map { it.toEarning() },
             payments = ledger.payments().map { it.toPayment() }
@@ -629,10 +631,13 @@ class ShiftManager(private val context: Context) {
             database.withTransaction {
                 dao.clearCalendar()
                 dao.clearSaved()
+                // A backup from before the Extra switch tells extra hours by the
+                // old presets, exactly as the database upgrade did.
+                val legacy: (Shift) -> Shift = { if (backupData.extraFlagged) it else it.withLegacyExtraFlag() }
                 dao.insertCalendar(
-                    backupData.shifts.flatMap { (date, list) -> calendarRows(LocalDate.parse(date), list) }
+                    backupData.shifts.flatMap { (date, list) -> calendarRows(LocalDate.parse(date), list.map(legacy)) }
                 )
-                dao.insertSaved(savedRows(backupData.templates))
+                dao.insertSaved(savedRows(backupData.templates.map(legacy)))
 
                 // A backup from before the ledger existed says nothing about
                 // it, so the ledger on the phone is kept rather than wiped.

@@ -36,7 +36,17 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -61,20 +71,12 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
-private val csDayLabelFmt = DateTimeFormatter.ofPattern("EEEE, MMM d")
+private val csDayLabelFmt = DateTimeFormatter.ofPattern("EEEE, d MMMM")
 
 /** Default span for a brand-new shift. */
 private const val DEFAULT_START_TIME = "09:00"
 private const val DEFAULT_END_TIME = "17:00"
 
-private data class MultiplierPreset(val value: Double, val label: String)
-
-private val MultiplierPresets = listOf(
-    MultiplierPreset(PayMultipliers.NORMAL, "Normal"),
-    MultiplierPreset(PayMultipliers.OVERTIME, "1.5× OT"),
-    MultiplierPreset(PayMultipliers.HOLIDAY, "1.75× Holiday"),
-    MultiplierPreset(PayMultipliers.DOUBLE, "2× Double")
-)
 
 private fun dayTypeLabel(type: DayType): String = when (type) {
     DayType.WORKED -> "Worked"
@@ -147,7 +149,14 @@ fun CustomShiftScreen(
     // Progressive disclosure: most shifts have no break worth setting, so the
     // section starts folded. Its header still shows a break that is set.
     var breakExpanded by rememberSaveable { mutableStateOf(false) }
-    var multiplier by rememberSaveable { mutableDoubleStateOf(PayMultipliers.NORMAL) }
+    // Blank means 1×, the normal rate. Any value can be typed; nothing is
+    // applied automatically — an extra shift pays its normal rate unless set.
+    var multiplierText by rememberSaveable { mutableStateOf("") }
+    var isExtra by rememberSaveable { mutableStateOf(false) }
+    // An edited calendar entry keeps its paid tick; anything new starts pending.
+    var extraPaid by rememberSaveable { mutableStateOf(false) }
+    // Multiplier and bonus are rarely needed: folded away unless in use.
+    var payOptionsExpanded by rememberSaveable { mutableStateOf(false) }
     var selectedColorValue by rememberSaveable { mutableLongStateOf(ShiftColors.Palette[0].toArgb().toLong()) }
     var showCustomColor by rememberSaveable { mutableStateOf(false) }
     // Keeps the custom slot filled once a custom colour has been used, so
@@ -198,7 +207,10 @@ fun CustomShiftScreen(
         }
         dayType = shift.dayType
         paidBreak = shift.paidBreak
-        multiplier = if (shift.payMultiplier > 0.0) shift.payMultiplier else 1.0
+        multiplierText = shift.payMultiplier.takeIf { it > 0.0 && it != 1.0 }?.let(::formatDecimalInput) ?: ""
+        isExtra = shift.isExtra
+        extraPaid = shift.extraPaid
+        payOptionsExpanded = multiplierText.isNotEmpty() || shift.bonus > 0.0
         note = shift.notes
         location = shift.location
         rateText = if (shift.hourlyRate > 0.0) formatDecimalInput(shift.hourlyRate) else ""
@@ -236,13 +248,14 @@ fun CustomShiftScreen(
     // saving. The old check also captured `isWorked` once inside
     // derivedStateOf and never saw the day type change afterwards.
     val canSave = name.isNotBlank()
+    val multiplier = parseDecimal(multiplierText)?.takeIf { it > 0.0 } ?: PayMultipliers.NORMAL
 
     val cs = MaterialTheme.colorScheme
 
     // The draft, assembled the same way save() does it — so the summary below
     // reflects exactly what will be stored.
     val draft = remember(
-        name, startTime, endTime, dayType, paidBreak, multiplier,
+        name, startTime, endTime, dayType, paidBreak, multiplier, isExtra,
         rateText, bonusText, breakText, paidLeaveText, selectedColorValue
     ) {
         Shift(
@@ -256,7 +269,9 @@ fun CustomShiftScreen(
             breakMinutes = if (isWorked) (breakText.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0) else 0,
             paidBreak = paidBreak,
             dayType = dayType,
-            paidLeaveHours = parseDecimal(paidLeaveText) ?: 8.0
+            paidLeaveHours = parseDecimal(paidLeaveText) ?: 8.0,
+            // Only worked time can be extra hours.
+            isExtra = dayType == DayType.WORKED && isExtra
         )
     }
 
@@ -274,7 +289,10 @@ fun CustomShiftScreen(
             location = location.trim(),
             notes = note,
             iconName = iconName,
-            jobId = carriedJobId
+            jobId = carriedJobId,
+            // Saved shifts never carry a paid tick; a calendar entry being
+            // edited keeps the one it had.
+            extraPaid = frozenEntryIndex != null && draft.isExtra && extraPaid
         )
         scope.launch {
             // Editing one calendar entry: replace just that entry, in place.
@@ -313,6 +331,9 @@ fun CustomShiftScreen(
     // NavController and skip the IME teardown above.
     BackHandler { leaveScreen(onBackClick) }
 
+    val accent = rememberShiftAccent(selectedColorValue)
+    val money = { amount: Double -> "$currencySymbol${"%,.2f".format(amount)}" }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -324,24 +345,23 @@ fun CustomShiftScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AppSpace.screenH)
-                .padding(top = 8.dp, bottom = 14.dp),
+                .padding(top = 8.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            CircleIconButton(
+            HeaderButton(
                 icon = AppIcons.ChevronLeft,
                 contentDescription = "Back",
-                onClick = { leaveScreen(onBackClick) },
-                diameter = 44.dp,
-                iconSize = 20.dp
+                onClick = { leaveScreen(onBackClick) }
             )
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 14.dp)
+                    .padding(horizontal = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     if (isEditing) "Edit shift" else "New shift",
-                    style = MaterialTheme.typography.displayMedium,
+                    style = MaterialTheme.typography.titleMedium,
                     color = cs.onBackground,
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
@@ -366,13 +386,12 @@ fun CustomShiftScreen(
                 shape = CircleShape,
                 color = saveContainer,
                 contentColor = saveContent,
-                shadowElevation = 0.dp
+                shadowElevation = 0.dp,
+                modifier = Modifier.height(44.dp)
             ) {
-                Text(
-                    "Save",
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 13.dp)
-                )
+                Box(Modifier.padding(horizontal = 18.dp), contentAlignment = Alignment.Center) {
+                    Text("Save", style = MaterialTheme.typography.titleSmall)
+                }
             }
         }
 
@@ -383,228 +402,268 @@ fun CustomShiftScreen(
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = AppSpace.screenH)
-                .padding(top = 4.dp, bottom = 32.dp)
+                .padding(top = 8.dp, bottom = 32.dp)
         ) {
             // ── Basics ──
-            FormCard {
-                FieldLabel("Name")
-                Spacer(Modifier.height(10.dp))
-                FormTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    placeholder = "e.g. Barista Shift",
-                    singleLine = true
-                )
-                Spacer(Modifier.height(12.dp))
-                IconField(
-                    name = name,
-                    iconName = iconName,
-                    colorValue = selectedColorValue,
-                    onClick = {
-                        keyboard?.hide(); focusManager.clearFocus(force = true)
-                        showIconPicker = true
-                    }
-                )
-                Spacer(Modifier.height(22.dp))
-                FieldLabel("Color")
-                Spacer(Modifier.height(12.dp))
-                ColorPicker(
-                    selected = selectedColorValue,
-                    custom = customColorValue,
-                    onSelect = { selectedColorValue = it },
-                    onCustom = {
-                        keyboard?.hide(); focusManager.clearFocus(force = true)
-                        showCustomColor = true
-                    }
-                )
-            }
+            FieldCaption("Name", modifier = Modifier.padding(top = 10.dp))
+            Spacer(Modifier.height(8.dp))
+            DesignTextField(
+                value = name,
+                onValueChange = { name = it },
+                placeholder = "e.g. Barista shift",
+                imeAction = ImeAction.Done,
+                keyboardActions = KeyboardActions(onDone = { keyboard?.hide(); focusManager.clearFocus() })
+            )
 
-            Spacer(Modifier.height(AppSpace.cardGap))
+            FieldCaption("Icon", modifier = Modifier.padding(top = 24.dp))
+            Spacer(Modifier.height(10.dp))
+            IconChoices(
+                name = name,
+                selected = iconName,
+                colorValue = selectedColorValue,
+                onPick = { iconName = it },
+                onMore = {
+                    keyboard?.hide(); focusManager.clearFocus(force = true)
+                    showIconPicker = true
+                }
+            )
+
+            FieldCaption("Color", modifier = Modifier.padding(top = 24.dp))
+            Spacer(Modifier.height(10.dp))
+            ColorPicker(
+                selected = selectedColorValue,
+                custom = customColorValue,
+                onSelect = { selectedColorValue = it },
+                onCustom = {
+                    keyboard?.hide(); focusManager.clearFocus(force = true)
+                    showCustomColor = true
+                }
+            )
 
             // ── Day type ──
-            FormCard {
-                FieldLabel("Day type")
-                Spacer(Modifier.height(4.dp))
-                // The line underneath changes length with the choice, so it
-                // crossfades and the card eases to its new height.
-                AnimatedContent(
-                    targetState = dayType,
-                    transitionSpec = {
-                        fadeIn(tween(180, delayMillis = 60)) togetherWith fadeOut(tween(100)) using
-                            SizeTransform(clip = false) { _, _ -> tween(220, easing = FastOutSlowInEasing) }
+            FieldCaption("Day type", modifier = Modifier.padding(top = 28.dp))
+            Spacer(Modifier.height(10.dp))
+            SegmentedPills(
+                options = DayType.entries.map { it to dayTypeLabel(it) },
+                selected = dayType,
+                onSelect = { dayType = it }
+            )
+            // The line underneath changes length with the choice, so it
+            // crossfades and the form eases to its new height.
+            AnimatedContent(
+                targetState = dayType,
+                transitionSpec = {
+                    fadeIn(tween(180, delayMillis = 60)) togetherWith fadeOut(tween(100)) using
+                        SizeTransform(clip = false) { _, _ -> tween(220, easing = FastOutSlowInEasing) }
+                },
+                label = "dayTypeHint",
+                modifier = Modifier.padding(top = 8.dp)
+            ) { type ->
+                Text(
+                    when (type) {
+                        DayType.WORKED -> "Time on the clock, paid by the hour."
+                        DayType.PAID_LEAVE -> "A paid day away: annual leave, sick leave, a paid public holiday."
+                        DayType.UNPAID_LEAVE -> "A day away without pay. Logged for the record, earns nothing."
                     },
-                    label = "dayTypeHint"
-                ) { type ->
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // Each block carries its own leading space, so nothing is left
+            // behind to jump when it leaves.
+            AnimatedVisibility(visible = isWorked, enter = FormMotion.enter, exit = FormMotion.exit) {
+                Column {
+                    Spacer(Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TimeTile("Starts", startTime, Modifier.weight(1f)) {
+                            keyboard?.hide(); focusManager.clearFocus(force = true)
+                            pickingStart = true; showTimePicker = true
+                        }
+                        TimeTile("Ends", endTime, Modifier.weight(1f)) {
+                            keyboard?.hide(); focusManager.clearFocus(force = true)
+                            pickingStart = false; showTimePicker = true
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    DayTimeline(start = startTime, end = endTime, color = accent, showScale = false)
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        when (type) {
-                            DayType.WORKED -> "Time on the clock, paid by the hour."
-                            DayType.PAID_LEAVE -> "Away but still paid — annual leave, sick leave, a paid public holiday."
-                            DayType.UNPAID_LEAVE -> "Away and not paid. Logged for the record, earns nothing."
-                        },
+                        spanCaption(draft, startTime, endTime),
                         style = MaterialTheme.typography.bodySmall,
-                        color = cs.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth()
+                        color = cs.onSurfaceVariant
                     )
                 }
-                Spacer(Modifier.height(14.dp))
-                SegmentedControl(
-                    options = DayType.entries.map { it to dayTypeLabel(it) },
-                    selected = dayType,
-                    onSelect = { dayType = it }
-                )
-
-                // Each block carries its own leading space, so nothing is left
-                // behind to jump when it leaves.
-                AnimatedVisibility(visible = isWorked, enter = FormMotion.enter, exit = FormMotion.exit) {
-                    Column {
-                        Spacer(Modifier.height(20.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            TimeField("Start", startTime, Modifier.weight(1f)) {
-                                keyboard?.hide(); focusManager.clearFocus(force = true)
-                                pickingStart = true; showTimePicker = true
-                            }
-                            TimeField("End", endTime, Modifier.weight(1f)) {
-                                keyboard?.hide(); focusManager.clearFocus(force = true)
-                                pickingStart = false; showTimePicker = true
-                            }
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        BreakSection(
-                            expanded = breakExpanded,
-                            onToggle = {
-                                if (breakExpanded) { keyboard?.hide(); focusManager.clearFocus(force = true) }
-                                breakExpanded = !breakExpanded
-                            },
-                            breakText = breakText,
-                            onBreakText = { breakText = it },
-                            paidBreak = paidBreak,
-                            onPaidBreak = { paidBreak = it }
-                        )
-                    }
-                }
-                AnimatedVisibility(
-                    visible = dayType == DayType.PAID_LEAVE,
-                    enter = FormMotion.enter, exit = FormMotion.exit
-                ) {
-                    Column {
-                        Spacer(Modifier.height(20.dp))
-                        FieldLabel("Paid hours credited")
-                        Spacer(Modifier.height(10.dp))
-                        FormTextField(
-                            value = paidLeaveText,
-                            onValueChange = { paidLeaveText = it },
-                            placeholder = "8",
-                            singleLine = true,
-                            keyboardType = KeyboardType.Decimal,
-                            suffix = "hours"
-                        )
-                    }
+            }
+            AnimatedVisibility(
+                visible = dayType == DayType.PAID_LEAVE,
+                enter = FormMotion.enter, exit = FormMotion.exit
+            ) {
+                Column {
+                    FieldCaption("Paid hours credited", modifier = Modifier.padding(top = 18.dp))
+                    Spacer(Modifier.height(8.dp))
+                    DesignTextField(
+                        value = paidLeaveText,
+                        onValueChange = { paidLeaveText = it },
+                        placeholder = "8",
+                        keyboardType = KeyboardType.Decimal,
+                        suffix = "hours"
+                    )
                 }
             }
 
-            // ── Pay ──
+            // ── Extra hours, break and pay ──
             AnimatedVisibility(visible = isPaid, enter = FormMotion.enter, exit = FormMotion.exit) {
                 Column {
-                    Spacer(Modifier.height(AppSpace.cardGap))
-                    FormCard {
-                        // A salaried job is paid by the month: a rate per shift
-                        // would mean nothing, so the form doesn't ask for one.
-                        if (salaried) {
-                            Text(
-                                "Paid by your monthly salary, so this shift needs no rate. " +
-                                    "Its hours still count, and a multiplier below marks it as overtime.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant
-                            )
-                        } else {
-                            FieldLabel("Hourly rate", optional = true)
-                            Spacer(Modifier.height(10.dp))
-                            FormTextField(
-                                value = rateText,
-                                onValueChange = { rateText = it },
-                                placeholder = "0.00",
-                                singleLine = true,
-                                keyboardType = KeyboardType.Decimal,
-                                prefix = currencySymbol,
-                                suffix = "/hr"
-                            )
-                        }
-
+                    Spacer(Modifier.height(24.dp))
+                    GroupedRows {
                         AnimatedVisibility(visible = isWorked, enter = FormMotion.enter, exit = FormMotion.exit) {
                             Column {
-                                Spacer(Modifier.height(22.dp))
-                                FieldLabel("Rate multiplier")
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "For overtime, Sundays, night shifts or working a public holiday.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = cs.onSurfaceVariant
+                                SwitchRow(
+                                    title = "Extra hours",
+                                    subtitle = if (isExtra) "Counted as extra and tracked in the Wallet until paid"
+                                    else "Overtime or a picked-up shift, counted separately",
+                                    checked = isExtra,
+                                    onCheckedChange = { isExtra = it }
                                 )
-                                Spacer(Modifier.height(12.dp))
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    MultiplierPresets.forEach { preset ->
-                                        FilterPill(
-                                            text = preset.label,
-                                            selected = multiplier == preset.value,
-                                            onClick = { multiplier = preset.value }
-                                        )
+                                GroupDivider()
+                                val minutes = breakText.trim().toIntOrNull()?.takeIf { it > 0 }
+                                ExpandRow(
+                                    title = "Break",
+                                    summary = when {
+                                        minutes == null -> "No break"
+                                        paidBreak -> "$minutes min · paid"
+                                        else -> "$minutes min · unpaid"
+                                    },
+                                    summaryActive = minutes != null,
+                                    expanded = breakExpanded,
+                                    onToggle = {
+                                        if (breakExpanded) { keyboard?.hide(); focusManager.clearFocus(force = true) }
+                                        breakExpanded = !breakExpanded
                                     }
+                                ) {
+                                    DesignTextField(
+                                        value = breakText,
+                                        onValueChange = { breakText = it },
+                                        placeholder = "0",
+                                        keyboardType = KeyboardType.Number,
+                                        suffix = "min"
+                                    )
+                                    SwitchRow(
+                                        title = "Paid break",
+                                        subtitle = if (paidBreak) "Counts as worked time"
+                                        else "Taken off the worked time",
+                                        checked = paidBreak,
+                                        onCheckedChange = { paidBreak = it },
+                                        horizontalPadding = 0.dp
+                                    )
+                                }
+                                GroupDivider()
+                            }
+                        }
+
+                        val bonus = parseDecimal(bonusText)?.takeIf { it > 0.0 }
+                        val rate = parseDecimal(rateText)?.takeIf { it > 0.0 }
+                        val customised = (multiplier != 1.0 && isWorked) || bonus != null
+                        val paySummary = listOfNotNull(
+                            if (salaried) "Monthly salary"
+                            else rate?.let { "$currencySymbol${formatDecimalInput(it)}/hr" } ?: "No rate set",
+                            if (isWorked) {
+                                if (multiplier != 1.0) "${formatDecimalInput(multiplier)}× rate" else "normal rate"
+                            } else null,
+                            bonus?.let { "+${money(it)} bonus" } ?: "no bonus"
+                        ).joinToString(" · ")
+                        ExpandRow(
+                            title = "Pay",
+                            summary = paySummary,
+                            summaryActive = customised,
+                            expanded = payOptionsExpanded,
+                            onToggle = {
+                                if (payOptionsExpanded) { keyboard?.hide(); focusManager.clearFocus(force = true) }
+                                payOptionsExpanded = !payOptionsExpanded
+                            }
+                        ) {
+                            // Each figure is a short number, so they sit two to
+                            // a row; what each one means is a tap away on its
+                            // "?" rather than spelled out under it. A salaried
+                            // job is paid by the month: a rate per shift would
+                            // mean nothing, so none is asked for.
+                            val payFields = buildList<@Composable (Modifier) -> Unit> {
+                                if (!salaried) add { m ->
+                                    NumberField(
+                                        label = "Hourly rate",
+                                        help = "What this shift pays for each hour. Optional: it starts from your job's default rate.",
+                                        value = rateText,
+                                        onValueChange = { rateText = it },
+                                        placeholder = "0.00",
+                                        prefix = currencySymbol,
+                                        suffix = "/hr",
+                                        modifier = m
+                                    )
+                                }
+                                if (isWorked) add { m ->
+                                    NumberField(
+                                        label = "Multiplier",
+                                        help = "Optional. Leave blank for the normal rate, or set one if this shift really " +
+                                            "pays more, like 1.5 for time and a half. Marking hours as extra never changes pay on its own.",
+                                        value = multiplierText,
+                                        onValueChange = { multiplierText = it },
+                                        placeholder = "1",
+                                        suffix = "×",
+                                        modifier = m
+                                    )
+                                }
+                                add { m ->
+                                    NumberField(
+                                        label = "Bonus",
+                                        help = "Optional. Tips, a travel allowance, or any flat amount on top of this shift's pay.",
+                                        value = bonusText,
+                                        onValueChange = { bonusText = it },
+                                        placeholder = "0.00",
+                                        prefix = currencySymbol,
+                                        modifier = m
+                                    )
+                                }
+                            }
+                            payFields.chunked(2).forEachIndexed { rowIndex, row ->
+                                if (rowIndex > 0) Spacer(Modifier.height(14.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    row.forEach { field -> field(Modifier.weight(1f)) }
+                                    // A lone field keeps its half width.
+                                    if (row.size == 1) Spacer(Modifier.weight(1f))
                                 }
                             }
                         }
-
-                        Spacer(Modifier.height(22.dp))
-                        FieldLabel("Bonus", optional = true)
-                        Spacer(Modifier.height(4.dp))
+                    }
+                    if (salaried) {
                         Text(
-                            "Tips, travel allowance, or any flat extra for this shift.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = cs.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        FormTextField(
-                            value = bonusText,
-                            onValueChange = { bonusText = it },
-                            placeholder = "0.00",
-                            singleLine = true,
-                            keyboardType = KeyboardType.Decimal,
-                            prefix = currencySymbol
+                            "Covered by your monthly salary, so no rate is needed. The hours still count.",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                            color = cs.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
                         )
                     }
                 }
             }
 
             // ── Details ──
-            Spacer(Modifier.height(AppSpace.cardGap))
-            FormCard {
-                FieldLabel("Location", optional = true)
-                Spacer(Modifier.height(10.dp))
-                FormTextField(
-                    value = location,
-                    onValueChange = { location = it },
-                    placeholder = "e.g. Downtown Cafe",
-                    singleLine = true
-                )
-                Spacer(Modifier.height(22.dp))
-                FieldLabel("Note", optional = true)
-                Spacer(Modifier.height(10.dp))
-                FormTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    placeholder = "Add any notes...",
-                    singleLine = false,
-                    minHeight = 96.dp
-                )
-            }
-
-            // ── Live summary ──
-            Spacer(Modifier.height(AppSpace.cardGap))
-            SummaryCard(draft = draft, currencySymbol = currencySymbol, pay = activeProfile.pay)
+            FieldCaption("Location", optional = true, modifier = Modifier.padding(top = 26.dp))
+            Spacer(Modifier.height(8.dp))
+            DesignTextField(
+                value = location,
+                onValueChange = { location = it },
+                placeholder = "e.g. Downtown office"
+            )
+            FieldCaption("Note", optional = true, modifier = Modifier.padding(top = 20.dp))
+            Spacer(Modifier.height(8.dp))
+            DesignTextField(
+                value = note,
+                onValueChange = { note = it },
+                placeholder = "Anything to remember",
+                singleLine = false,
+                minHeight = 96.dp
+            )
         }
     }
 
@@ -680,30 +739,215 @@ internal object FormMotion {
             shrinkVertically(tween(220, easing = FastOutSlowInEasing), shrinkTowards = Alignment.Top)
 }
 
-/**
- * Break minutes and whether they are paid, folded behind one header row. The
- * header says what is set, so a folded section never hides a real value.
- */
+/** "8h on the clock · ends the same day", plus the paid time when a break is taken off. */
+private fun spanCaption(draft: Shift, start: String, end: String): String {
+    val span = PayEngine.grossSpanHours(draft)
+    val paid = PayEngine.payableHours(draft)
+    // Equal times are a full 24 hours, so they end the next day too.
+    val nextDay = end <= start
+    val base = "${hoursText(span)} on the clock · ends the ${if (nextDay) "next" else "same"} day"
+    return if (paid < span) "$base · ${hoursText(paid)} paid" else base
+}
+
+/** The quick picks: the name's letter, four common marks, and the rest a tap away. */
+private val QuickIcons = listOf("shift_morning", "shift_evening", "shift_night", "vacation")
+
 @Composable
-private fun BreakSection(
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    breakText: String,
-    onBreakText: (String) -> Unit,
-    paidBreak: Boolean,
-    onPaidBreak: (Boolean) -> Unit
+private fun IconChoices(
+    name: String,
+    selected: String?,
+    colorValue: Long,
+    onPick: (String?) -> Unit,
+    onMore: () -> Unit
+) {
+    // A pick made in the full picker takes the last quick slot, so the
+    // chosen mark is always in view.
+    val keys: List<String?> = remember(selected) {
+        val quick = if (selected != null && selected !in QuickIcons) QuickIcons.take(3) + selected else QuickIcons
+        listOf<String?>(null) + quick
+    }
+    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        keys.forEach { key ->
+            IconTile(
+                key = key,
+                name = name,
+                colorValue = colorValue,
+                selected = key == selected,
+                modifier = Modifier.weight(1f),
+                onClick = { onPick(key) }
+            )
+        }
+        val cs = MaterialTheme.colorScheme
+        Box(
+            Modifier
+                .weight(1f)
+                .height(50.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(cs.surfaceVariant)
+                .clickable(onClickLabel = "Choose from all icons", onClick = onMore),
+            contentAlignment = Alignment.Center
+        ) {
+            // Three dots: "and more", without a word to squeeze into the tile.
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                repeat(3) { Box(Modifier.size(4.dp).background(cs.onSurfaceVariant, CircleShape)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun IconTile(
+    key: String?,
+    name: String,
+    colorValue: Long,
+    selected: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val minutes = breakText.trim().toIntOrNull()?.takeIf { it > 0 }
-    val summary = when {
-        minutes == null -> "No break"
-        paidBreak -> "$minutes min · paid"
-        else -> "$minutes min · unpaid"
-    }
-    val chevronTurn by animateFloatAsState(
-        if (expanded) 180f else 0f, tween(240, easing = FastOutSlowInEasing), label = "breakChevron"
+    val isDark = AppTheme.accents.isDark
+    val base = rememberShiftColor(colorValue)
+    val accent = rememberShiftAccent(base)
+    val ink = rememberShiftInk(base)
+    val shape = RoundedCornerShape(16.dp)
+    val fill by animateColorAsState(
+        if (selected) accent.copy(alpha = if (isDark) 0.24f else 0.16f) else cs.surfaceVariant,
+        tween(180), label = "iconTileFill"
     )
+    val edge by animateColorAsState(if (selected) ink else Color.Transparent, tween(180), label = "iconTileEdge")
+    val res = ShiftIconCatalog.resOf(key)
+    Box(
+        modifier
+            .height(50.dp)
+            .clip(shape)
+            .drawBehind { drawRect(fill) }
+            .border(1.5.dp, edge, shape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = key?.let(ShiftIconCatalog::labelOf) ?: "First letter of the name" },
+        contentAlignment = Alignment.Center
+    ) {
+        val tint = if (selected) ink else cs.onSurfaceVariant
+        if (res != null) {
+            ToneIcon(
+                id = res,
+                contentDescription = null,
+                tones = if (selected) IconTones(outline = ink, fill = accent.copy(alpha = 0.35f), accent = accent)
+                else IconTones.of(tint, isDark),
+                size = 22.dp
+            )
+        } else {
+            Text(
+                initialOf(name) ?: "Aa",
+                style = MaterialTheme.typography.titleSmall.copy(fontSize = 17.sp),
+                color = tint
+            )
+        }
+    }
+}
 
+@Composable
+private fun TimeTile(label: String, value: String, modifier: Modifier, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        modifier
+            .height(72.dp)
+            .clip(shape)
+            .border(HairlineWidth, cs.softEdge, shape)
+            .clickable(onClickLabel = if (label == "Starts") "Change start time" else "Change end time", onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+        AnimatedContent(
+            targetState = value,
+            transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+            label = "timeTile"
+        ) { time ->
+            Text(
+                time,
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp),
+                color = cs.onSurface
+            )
+        }
+    }
+}
+
+/**
+ * A row of the grouped block that opens in place: its title, what is set,
+ * and the fields underneath once opened. The summary means a folded row never
+ * hides a real value.
+ */
+@Composable
+private fun ExpandRow(
+    title: String,
+    summary: String,
+    summaryActive: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val chevronTurn by animateFloatAsState(
+        if (expanded) 90f else 0f, tween(240, easing = FastOutSlowInEasing), label = "rowChevron"
+    )
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClickLabel = "${if (expanded) "Hide" else "Show"} ${title.lowercase()} options", onClick = onToggle)
+                .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+                Spacer(Modifier.height(1.dp))
+                AnimatedContent(
+                    targetState = summary,
+                    transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+                    label = "rowSummary"
+                ) { text ->
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (summaryActive) cs.onSurface else cs.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Icon(
+                AppIcons.ChevronRight, null,
+                tint = cs.onSurfaceVariant,
+                modifier = Modifier.size(18.dp).rotate(chevronTurn)
+            )
+        }
+        AnimatedVisibility(visible = expanded, enter = FormMotion.enter, exit = FormMotion.exit) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), content = content)
+        }
+    }
+}
+
+/**
+ * A folded group of optional settings: a header that says what is set, and
+ * the fields underneath once opened. Keeps rarely-used options a tap away
+ * instead of in the way. Same look as the break section above.
+ */
+@Composable
+internal fun CollapsibleSection(
+    icon: androidx.compose.ui.graphics.painter.Painter,
+    title: String,
+    summary: String,
+    summaryActive: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val chevronTurn by animateFloatAsState(
+        if (expanded) 180f else 0f, tween(240, easing = FastOutSlowInEasing), label = "sectionChevron"
+    )
     Column(
         Modifier
             .fillMaxWidth()
@@ -715,10 +959,7 @@ private fun BreakSection(
             Modifier
                 .fillMaxWidth()
                 .heightIn(min = 56.dp)
-                .clickable(
-                    onClickLabel = if (expanded) "Hide break" else "Set a break",
-                    onClick = onToggle
-                )
+                .clickable(onClickLabel = if (expanded) "Hide $title" else "Show $title", onClick = onToggle)
                 .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
                 .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -727,24 +968,18 @@ private fun BreakSection(
                 Modifier.size(36.dp).clip(CircleShape).background(cs.primary.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(AppIcons.Break, null, tint = cs.primary, modifier = Modifier.size(20.dp))
+                Icon(icon, null, tint = cs.primary, modifier = Modifier.size(20.dp))
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                FieldLabel("Break", optional = true)
+                Text(title, style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
                 Spacer(Modifier.height(2.dp))
-                AnimatedContent(
-                    targetState = summary,
-                    transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
-                    label = "breakSummary"
-                ) { text ->
-                    Text(
-                        text,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (minutes == null) cs.onSurfaceVariant else cs.primary,
-                        maxLines = 1
-                    )
-                }
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (summaryActive) cs.primary else cs.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
             }
             Icon(
                 AppIcons.ChevronDown, null,
@@ -752,26 +987,8 @@ private fun BreakSection(
                 modifier = Modifier.size(20.dp).rotate(chevronTurn)
             )
         }
-
         AnimatedVisibility(visible = expanded, enter = FormMotion.enter, exit = FormMotion.exit) {
-            Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp)) {
-                FormTextField(
-                    value = breakText,
-                    onValueChange = onBreakText,
-                    placeholder = "0",
-                    singleLine = true,
-                    keyboardType = KeyboardType.Number,
-                    suffix = "min"
-                )
-                Spacer(Modifier.height(10.dp))
-                ToggleRow(
-                    title = "Paid break",
-                    subtitle = if (paidBreak) "Break counts as worked time"
-                    else "Break is deducted from worked time",
-                    checked = paidBreak,
-                    onCheckedChange = onPaidBreak
-                )
-            }
+            Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp), content = content)
         }
     }
 }
@@ -857,40 +1074,7 @@ internal fun FormTextField(
 }
 
 @Composable
-private fun TimeField(
-    label: String,
-    value: String,
-    modifier: Modifier,
-    onClick: () -> Unit
-) {
-    val cs = MaterialTheme.colorScheme
-    Column(
-        modifier
-            .clip(MaterialTheme.shapes.medium)
-            .background(cs.background)
-            .border(1.dp, cs.outline, MaterialTheme.shapes.medium)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp)
-    ) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                value,
-                style = MaterialTheme.typography.headlineSmall,
-                color = cs.onSurface,
-                modifier = Modifier.weight(1f)
-            )
-            Icon(
-                AppIcons.Clock, null,
-                tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     title: String,
     subtitle: String,
     checked: Boolean,
@@ -930,102 +1114,6 @@ private fun ToggleRow(
                 uncheckedBorderColor = cs.outline
             )
         )
-    }
-}
-
-@Composable
-private fun SummaryCard(draft: Shift, currencySymbol: String, pay: PaySetup = PaySetup()) {
-    val cs = MaterialTheme.colorScheme
-    val accents = AppTheme.accents
-
-    val payableHours = PayEngine.payableHours(draft)
-    val grossSpan = PayEngine.grossSpanHours(draft)
-    val multiplierActive = PayEngine.effectiveMultiplier(draft) != 1.0
-    // On a salary a shift earns nothing by itself — only marked overtime,
-    // valued at the reference rate, and its bonus come on top.
-    val markedOvertime = pay.isFixed && multiplierActive && PayEngine.isWorked(draft) &&
-        pay.overtimeSource == OvertimeSource.MARKED_SHIFTS && pay.overtimeCompensation == OvertimeCompensation.PAID
-    val earnings = if (pay.isFixed) {
-        (if (markedOvertime) PayEngine.workedHours(draft) * pay.referenceHourlyRate * PayEngine.effectiveMultiplier(draft) else 0.0) +
-            (if (draft.dayType == DayType.UNPAID_LEAVE) 0.0 else draft.bonus)
-    } else PayEngine.earnings(draft)
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.large)
-            .background(cs.primary.copy(alpha = 0.10f))
-            .animateContentSize(tween(220, easing = FastOutSlowInEasing))
-            .padding(20.dp)
-    ) {
-        Text(
-            if (pay.isFixed) "On top of your salary" else "This shift is worth",
-            style = MaterialTheme.typography.labelLarge,
-            color = cs.onSurfaceVariant
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                "$currencySymbol${"%,.2f".format(earnings)}",
-                style = MaterialTheme.typography.headlineLarge,
-                color = cs.onSurface,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                hoursText(payableHours),
-                style = MaterialTheme.typography.titleMedium,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 3.dp)
-            )
-        }
-
-        Spacer(Modifier.height(14.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            when (draft.dayType) {
-                DayType.WORKED -> {
-                    SummaryChip("${hoursText(grossSpan)} on the clock", cs.surfaceVariant, cs.onSurfaceVariant)
-                    if (draft.breakMinutes > 0) {
-                        SummaryChip(
-                            if (draft.paidBreak) "${draft.breakMinutes}m break, paid"
-                            else "${draft.breakMinutes}m break, unpaid",
-                            cs.surfaceVariant, cs.onSurfaceVariant
-                        )
-                    }
-                    if (multiplierActive) {
-                        SummaryChip(
-                            "×${"%.2f".format(draft.payMultiplier).trimEnd('0').trimEnd('.')} rate",
-                            accents.nightSoft, accents.night
-                        )
-                    }
-                }
-                DayType.PAID_LEAVE ->
-                    SummaryChip("Paid leave", accents.morningSoft, accents.positive)
-                DayType.UNPAID_LEAVE ->
-                    SummaryChip("Unpaid — earns nothing", accents.negative.copy(alpha = 0.12f), accents.negative)
-            }
-            if (draft.bonus > 0.0) {
-                SummaryChip(
-                    "+$currencySymbol${"%,.2f".format(draft.bonus)} bonus",
-                    accents.eveningSoft, accents.evening
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SummaryChip(text: String, container: Color, contentColor: Color) {
-    Box(
-        Modifier
-            .clip(CircleShape)
-            .background(container)
-            .padding(horizontal = 14.dp, vertical = 8.dp)
-    ) {
-        Text(text, style = MaterialTheme.typography.labelMedium, color = contentColor, maxLines = 1)
     }
 }
 

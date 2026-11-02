@@ -15,6 +15,29 @@ package com.leonidaskiachidis.shiftvault
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -59,6 +82,8 @@ private enum class WalletTab(val label: String) {
 
 private val paymentDateFmt = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
 private val monthFmt = DateTimeFormatter.ofPattern("MMMM yyyy")
+private val extraDayFmt = DateTimeFormatter.ofPattern("EEE d MMM")
+private val shortMonthFmt = DateTimeFormatter.ofPattern("MMM")
 
 /** How many work periods Balance lists before "Show all". */
 private const val PeriodPreview = 5
@@ -82,7 +107,9 @@ fun WalletScreen(
     weekStart: java.time.DayOfWeek = java.time.DayOfWeek.MONDAY,
     /** Adds a period's calculated pay to the ledger; returns the problem, or null. */
     onAddExpected: suspend (List<Earning>) -> String? = { null },
-    onSetShortfallAccepted: (Long, Boolean) -> Unit = { _, _ -> }
+    onSetShortfallAccepted: (Long, Boolean) -> Unit = { _, _ -> },
+    /** Marks extra shifts (dates → positions in the job's day) paid or pending. */
+    onSetExtraPaid: (Map<LocalDate, Set<Int>>, Boolean) -> Unit = { _, _ -> }
 ) {
     val cs = MaterialTheme.colorScheme
     val currencySymbol = remember(currencyCode) {
@@ -97,11 +124,12 @@ fun WalletScreen(
     val statements = remember(activeProfile, savedShifts, balances, weekStart) {
         Statements.build(activeProfile, savedShifts, balances, today, weekStart)
     }
+    val extraEntries = remember(savedShifts) { ExtraHours.entries(savedShifts) }
     var statementStart by rememberSaveable { mutableStateOf<String?>(null) }
     var statementEnd by rememberSaveable { mutableStateOf<String?>(null) }
 
     var tab by rememberSaveable { mutableStateOf(WalletTab.BALANCE) }
-    var filter by rememberSaveable { mutableStateOf(LedgerFilter.ALL) }
+    // Set from a pay period's sheet: Earnings then shows that period only.
     var periodStart by rememberSaveable { mutableStateOf<String?>(null) }
     var periodEnd by rememberSaveable { mutableStateOf<String?>(null) }
     val periodFilter = periodStart?.let { s -> periodEnd?.let { e -> DateRange(LocalDate.parse(s), LocalDate.parse(e)) } }
@@ -111,17 +139,18 @@ fun WalletScreen(
     var paymentForId by rememberSaveable { mutableStateOf<Long?>(null) }
     var showEditor by rememberSaveable { mutableStateOf(false) }
     var editingId by rememberSaveable { mutableStateOf<Long?>(null) }
-    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var showOwedPicker by rememberSaveable { mutableStateOf(false) }
 
     fun openEditor(id: Long?) {
         editingId = id
         showEditor = true
     }
 
-    // The title row gives its space back as soon as the content scrolls, and
+    // The title gives its space back as soon as the content scrolls, and
     // returns on the first scroll back up; only the tab switch stays put.
     val header = remember { CollapsingHeaderState() }
     LaunchedEffect(tab) { header.expand() }
+    val insightsHeader = remember { InsightsHeaderState() }
 
     Column(
         Modifier
@@ -130,59 +159,124 @@ fun WalletScreen(
             .statusBarsPadding()
             .nestedScroll(header.connection)
     ) {
-        ScreenHeader(
-            title = "Wallet",
-            modifier = Modifier.collapsing(header),
-            // The job selector applies to every tab, so it lives in the title row.
-            trailing = { ProfileChip(profile = activeProfile, onClick = onOpenProfiles) }
-        )
-        Spacer(Modifier.height(4.dp))
-        SegmentedControl(
+        Column(Modifier.collapsing(header)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = AppSpace.screenH).padding(top = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Wallet",
+                    style = ScreenTitleStyle,
+                    color = cs.onBackground,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                // Insights' period and export, only while Insights is showing.
+                AnimatedVisibility(
+                    visible = tab == WalletTab.INSIGHTS,
+                    enter = fadeIn(tween(200)) + scaleIn(tween(200), initialScale = 0.9f),
+                    exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.9f)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier
+                                .height(44.dp)
+                                .widthIn(max = 150.dp)
+                                .clip(CircleShape)
+                                .background(cs.surfaceVariant)
+                                .clickable(onClickLabel = "Choose the period", role = Role.Button) {
+                                    insightsHeader.onPickPeriod()
+                                }
+                                .padding(start = 12.dp, end = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(AppIcons.Calendar, null, tint = cs.onSurface, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                insightsHeader.periodLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = cs.onSurface,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        HeaderButton(
+                            icon = AppIcons.Upload,
+                            contentDescription = "Export this period",
+                            onClick = { insightsHeader.onExport() }
+                        )
+                    }
+                }
+            }
+            // The job applies to every tab, so it sits under the title.
+            ProfileSwitch(
+                profile = activeProfile,
+                onClick = onOpenProfiles,
+                modifier = Modifier.padding(start = AppSpace.screenH, top = 2.dp)
+            )
+        }
+        SegmentedPills(
             options = WalletTab.entries.map { it to it.label },
             selected = tab,
             onSelect = { tab = it },
-            modifier = Modifier.padding(horizontal = AppSpace.screenH)
+            modifier = Modifier.padding(horizontal = AppSpace.screenH).padding(top = 12.dp)
         )
-        Spacer(Modifier.height(12.dp))
 
-        when (tab) {
-            WalletTab.BALANCE -> BalancePane(
-                balances = balances,
-                statements = statements,
-                today = today,
-                money = money,
-                onAdd = { openEditor(null) },
-                onOpenStatement = { range ->
-                    statementStart = range.start.toString()
-                    statementEnd = range.end.toString()
-                },
-                onOpenEarning = { detailId = it },
-                onShowHistory = { showHistory = true },
-                modifier = Modifier.weight(1f)
-            )
-            WalletTab.EARNINGS -> EarningsPane(
-                balances = balances,
-                filter = filter,
-                onFilter = { filter = it },
-                period = periodFilter,
-                onClearPeriod = { periodStart = null; periodEnd = null },
-                money = money,
-                onOpenEarning = { detailId = it },
-                onAdd = { openEditor(null) },
-                modifier = Modifier.weight(1f)
-            )
-            WalletTab.INSIGHTS -> InsightsPane(
-                savedShifts = savedShifts,
-                currencyCode = currencyCode,
-                onExport = onExport,
-                activeProfile = activeProfile,
-                weekStart = weekStart,
-                modifier = Modifier.weight(1f)
-            )
+        // A quick crossfade between tabs, so a switch reads as one movement.
+        AnimatedContent(
+            targetState = tab,
+            transitionSpec = { fadeIn(tween(200, delayMillis = 60)) togetherWith fadeOut(tween(120)) },
+            label = "walletTab",
+            modifier = Modifier.weight(1f)
+        ) { shown ->
+            when (shown) {
+                WalletTab.BALANCE -> BalancePane(
+                    balances = balances,
+                    extraEntries = extraEntries,
+                    onSetExtraPaid = onSetExtraPaid,
+                    statements = statements,
+                    today = today,
+                    money = money,
+                    onAdd = { openEditor(null) },
+                    onRecordPayment = { showOwedPicker = true },
+                    onOpenStatement = { range ->
+                        statementStart = range.start.toString()
+                        statementEnd = range.end.toString()
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                WalletTab.EARNINGS -> EarningsPane(
+                    balances = balances,
+                    period = periodFilter,
+                    onClearPeriod = { periodStart = null; periodEnd = null },
+                    money = money,
+                    onOpenEarning = { detailId = it },
+                    onAdd = { openEditor(null) },
+                    modifier = Modifier.fillMaxSize()
+                )
+                WalletTab.INSIGHTS -> InsightsPane(
+                    savedShifts = savedShifts,
+                    currencyCode = currencyCode,
+                    onExport = onExport,
+                    activeProfile = activeProfile,
+                    weekStart = weekStart,
+                    header = insightsHeader,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
 
     // ── Sheets ──
+
+    if (showOwedPicker) {
+        OwedPickerSheet(
+            owed = remember(balances) { balances.filter { it.outstandingCents > 0L } },
+            money = money,
+            onPick = { id -> showOwedPicker = false; paymentForId = id },
+            onDismiss = { showOwedPicker = false }
+        )
+    }
 
     val statement = statementStart?.let { start ->
         statements.firstOrNull { it.range.start.toString() == start && it.range.end.toString() == statementEnd }
@@ -199,7 +293,6 @@ fun WalletScreen(
                 statementStart = null; statementEnd = null
                 periodStart = range.start.toString()
                 periodEnd = range.end.toString()
-                filter = LedgerFilter.ALL
                 tab = WalletTab.EARNINGS
             },
             onDismiss = { statementStart = null; statementEnd = null }
@@ -248,14 +341,6 @@ fun WalletScreen(
             onDismiss = { paymentForId = null }
         )
     }
-
-    if (showHistory) {
-        PaymentHistorySheet(
-            entries = remember(balances) { Ledger.history(balances) },
-            money = money,
-            onDismiss = { showHistory = false }
-        )
-    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -265,111 +350,97 @@ fun WalletScreen(
 @Composable
 private fun BalancePane(
     balances: List<EarningBalance>,
+    extraEntries: List<ExtraEntry>,
+    onSetExtraPaid: (Map<LocalDate, Set<Int>>, Boolean) -> Unit,
     statements: List<PeriodStatement>,
     today: LocalDate,
     money: (Long) -> String,
     onAdd: () -> Unit,
+    onRecordPayment: () -> Unit,
     onOpenStatement: (DateRange) -> Unit,
-    onOpenEarning: (Long) -> Unit,
-    onShowHistory: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val totals = remember(balances) { LedgerTotals.of(balances) }
     // Finished periods whose pay the app has worked out but nobody has added.
     val pending = remember(statements, today) { statements.filter { it.canAddExpected && it.range.end.isBefore(today) } }
-    val months = remember(balances) { Ledger.byMonth(balances).take(6) }
-    val types = remember(balances) { Ledger.byType(balances) }
-    val recent = remember(balances) { Ledger.history(balances).take(5) }
+    val payments = remember(balances) { Ledger.history(balances) }
     var allPeriods by rememberSaveable { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(start = AppSpace.screenH, end = AppSpace.screenH, top = 2.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        contentPadding = PaddingValues(start = AppSpace.screenH, end = AppSpace.screenH, top = 22.dp, bottom = 32.dp)
     ) {
-        item {
+        item(key = "hero") {
             BalanceHero(
                 totals = totals,
                 hasEarnings = balances.isNotEmpty(),
                 pendingPeriods = pending.size,
                 pendingCents = pending.sumOf { it.calculated?.expectedCents ?: 0L },
                 money = money,
-                onAdd = onAdd
+                onAdd = onAdd,
+                onRecordPayment = onRecordPayment
             )
         }
 
+        item(key = "extra") {
+            Spacer(Modifier.height(28.dp))
+            ExtraHoursCard(extraEntries, onSetExtraPaid)
+        }
+
         if (statements.isNotEmpty()) {
-            item {
-                StatsCard(
+            item(key = "periodsHeader") {
+                SectionHeader(
                     title = "Pay periods",
-                    subtitle = "Expected, received and hours paid"
-                ) {
-                    Spacer(Modifier.height(12.dp))
-                    val shown = if (allPeriods) statements else statements.take(PeriodPreview)
-                    shown.forEachIndexed { i, st ->
-                        if (i > 0) RowRule()
-                        StatementRow(st, today, money) { onOpenStatement(st.range) }
-                    }
-                    if (statements.size > PeriodPreview) {
-                        Spacer(Modifier.height(8.dp))
-                        TextTab(
-                            text = if (allPeriods) "Show fewer" else "Show all ${statements.size}",
-                            selected = false,
-                            onClick = { allPeriods = !allPeriods }
-                        )
-                    }
-                }
+                    action = if (statements.size > PeriodPreview) {
+                        if (allPeriods) "Show fewer" else "See all ${statements.size}"
+                    } else null,
+                    onAction = { allPeriods = !allPeriods },
+                    modifier = Modifier.padding(top = 28.dp)
+                )
+            }
+            val shown = if (allPeriods) statements else statements.take(PeriodPreview)
+            items(shown, key = { "period-${it.range.start}-${it.range.end}" }) { st ->
+                StatementRow(st, today, money, Modifier.animateItem()) { onOpenStatement(st.range) }
             }
         }
 
-        if (balances.isEmpty()) return@LazyColumn
-
-        item {
-            StatsCard(title = "By month", subtitle = "When the work was done") {
-                Spacer(Modifier.height(12.dp))
-                months.forEachIndexed { i, group ->
-                    if (i > 0) Spacer(Modifier.height(14.dp))
-                    BreakdownBar(
-                        label = group.key.format(monthFmt),
-                        totals = group.totals,
-                        money = money
-                    )
-                }
+        if (payments.isNotEmpty()) {
+            item(key = "received") {
+                ReceivedByMonth(payments = payments, today = today, money = money, modifier = Modifier.padding(top = 28.dp))
             }
         }
+    }
+}
 
-        item {
-            StatsCard(title = "By type") {
-                Spacer(Modifier.height(12.dp))
-                types.forEachIndexed { i, group ->
-                    if (i > 0) Spacer(Modifier.height(14.dp))
-                    BreakdownBar(
-                        label = group.key.label,
-                        totals = group.totals,
-                        money = money,
-                        icon = group.key.icon(),
-                        iconTint = group.key.tint()
-                    )
-                }
-            }
+/** A section's title, with an optional text action on the right. */
+@Composable
+private fun SectionHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    action: String? = null,
+    onAction: () -> Unit = {},
+    trailing: (@Composable () -> Unit)? = null
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp),
+            color = cs.onSurface,
+            modifier = Modifier.weight(1f)
+        )
+        if (action != null) {
+            Text(
+                action,
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(role = Role.Button, onClick = onAction)
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            )
         }
-
-        item {
-            val historyAction: (@Composable () -> Unit)? = if (recent.isEmpty()) null else {
-                { TextTab(text = "History", selected = false, onClick = onShowHistory) }
-            }
-            StatsCard(title = "Recent payments", trailing = historyAction) {
-                Spacer(Modifier.height(12.dp))
-                if (recent.isEmpty()) {
-                    EmptyHint("Nothing received yet. Open an earning to record a payment.")
-                } else {
-                    recent.forEachIndexed { i, entry ->
-                        if (i > 0) RowRule()
-                        PaymentHistoryRow(entry, money) { onOpenEarning(entry.earning.id) }
-                    }
-                }
-            }
-        }
+        trailing?.invoke()
     }
 }
 
@@ -381,22 +452,23 @@ private fun BalanceHero(
     pendingPeriods: Int,
     pendingCents: Long,
     money: (Long) -> String,
-    onAdd: () -> Unit
+    onAdd: () -> Unit,
+    onRecordPayment: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
     val pendingNote = if (pendingPeriods > 0)
         "$pendingPeriods finished pay period${if (pendingPeriods == 1) " isn't" else "s aren't"} in your wallet yet " +
-            "· ${money(pendingCents)} expected. Open ${if (pendingPeriods == 1) "it" else "one"} below to add it."
+            "(${money(pendingCents)} expected). Open ${if (pendingPeriods == 1) "it" else "one"} below to add it."
     else null
-    SoftCard(modifier = Modifier.fillMaxWidth()) {
+
+    Column(Modifier.fillMaxWidth()) {
         if (!hasEarnings) {
             Text("Track what you're owed", style = MaterialTheme.typography.titleLarge, color = cs.onSurface)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Add what each pay period should pay — the app works it out from your salary or shifts — " +
-                    "then record each payment as it arrives, with the hours it covers. " +
-                    "Whatever hasn't been paid stays owed; being paid one thing never marks another as paid.",
+                "Add what each pay period should pay (the app works it out from your salary or shifts), " +
+                    "then record each payment as it arrives. Whatever hasn't been paid stays owed.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = cs.onSurfaceVariant
             )
@@ -405,165 +477,473 @@ private fun BalanceHero(
                 Text(it, style = MaterialTheme.typography.bodySmall, color = accents.warning)
             }
             Spacer(Modifier.height(16.dp))
-            SheetActionButton(text = "Add an earning", icon = AppIcons.Add, onClick = onAdd)
-            return@SoftCard
+            PrimaryPillButton(text = "Add an earning", enabled = true, onClick = onAdd)
+            return@Column
         }
 
         val settled = totals.outstandingCents == 0L
         Row(verticalAlignment = Alignment.CenterVertically) {
+            if (settled) {
+                Icon(AppIcons.Check, null, tint = accents.positive, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+            }
             Text(
                 if (settled) "All paid up" else "Owed to you",
                 style = MaterialTheme.typography.labelLarge,
-                color = if (settled) accents.positive else cs.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
+                color = if (settled) accents.positive else cs.onSurfaceVariant
             )
-            AddButton(onAdd)
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            // The cents step back, so the whole amount is what is read first.
+            val amount = money(totals.outstandingCents)
+            AnimatedContent(
+                targetState = amount,
+                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
+                label = "owedAmount",
+                modifier = Modifier.weight(1f)
+            ) { text ->
+                Text(
+                    buildAnnotatedString {
+                        append(text.dropLast(3))
+                        withStyle(SpanStyle(color = cs.onSurfaceVariant.copy(alpha = 0.55f))) { append(text.takeLast(3)) }
+                    },
+                    style = MaterialTheme.typography.displayLarge.copy(
+                        fontSize = 52.sp, lineHeight = 54.sp, letterSpacing = (-2.4).sp, fontFeatureSettings = "tnum"
+                    ),
+                    color = cs.onSurface,
+                    maxLines = 1,
+                    autoSize = TextAutoSize.StepBased(minFontSize = 30.sp, maxFontSize = 52.sp, stepSize = 2.sp)
+                )
+            }
+            if (!settled) {
+                Spacer(Modifier.width(12.dp))
+                Row(
+                    Modifier
+                        .padding(bottom = 4.dp)
+                        .height(44.dp)
+                        .clip(CircleShape)
+                        .background(cs.primary)
+                        .clickable(onClickLabel = "Record a payment", role = Role.Button, onClick = onRecordPayment)
+                        .padding(start = 12.dp, end = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(AppIcons.Add, null, tint = cs.onPrimary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Payment", style = MaterialTheme.typography.labelLarge, color = cs.onPrimary)
+                }
+            }
         }
         Text(
-            money(totals.outstandingCents),
-            style = MaterialTheme.typography.headlineLarge,
-            color = if (settled) cs.onSurface else accents.negative
+            if (settled) "nothing is owed to you" else "still owed to you",
+            style = MaterialTheme.typography.bodyMedium,
+            color = cs.onSurfaceVariant
         )
-        Spacer(Modifier.height(14.dp))
-        ProgressTrack(
-            fraction = totals.receivedFraction,
-            fill = accents.positive,
-            track = if (settled) cs.surfaceVariant else accents.negative.copy(alpha = 0.25f)
-        )
+        Spacer(Modifier.height(16.dp))
+        ProgressTrack(fraction = totals.receivedFraction, fill = cs.primary, track = cs.surfaceVariant, height = 6.dp)
         Spacer(Modifier.height(12.dp))
         Row {
-            HeroFigure("Expected", money(totals.earnedCents), cs.onSurface, Modifier.weight(1f))
-            HeroFigure("Received", money(totals.receivedCents), accents.positive, Modifier.weight(1f))
-        }
-        val hoursPaid = totals.hoursPaid
-        val hoursExpected = totals.hoursExpected
-        if (hoursPaid != null || hoursExpected != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                listOfNotNull(
-                    hoursExpected?.let { "${hoursLabel(it)} expected" },
-                    hoursPaid?.let { "${hoursLabel(it)} paid" }
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant
+            HeroFigure(
+                "Expected", money(totals.earnedCents),
+                totals.hoursExpected?.let { hoursLabel(it) }, Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(12.dp))
+            HeroFigure(
+                "Received", money(totals.receivedCents),
+                totals.hoursPaid?.let { "${hoursLabel(it)} paid" }, Modifier.weight(1f)
             )
         }
         pendingNote?.let {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = accents.warning)
         }
     }
 }
 
+/** A labelled figure in a sheet, in [color]. */
 @Composable
 private fun HeroFigure(label: String, value: String, color: Color, modifier: Modifier = Modifier) {
     Column(modifier) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.titleMedium, color = color, maxLines = 1)
     }
 }
 
+@Composable
+private fun HeroFigure(label: String, value: String, note: String?, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge.copy(letterSpacing = (-0.4).sp, fontFeatureSettings = "tnum"),
+            color = cs.onSurface,
+            maxLines = 1
+        )
+        if (note != null) {
+            Text(note, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium), color = cs.onSurfaceVariant)
+        }
+    }
+}
+
 /**
- * One pay period at a glance: what's expected (from the ledger once added,
- * else as calculated), what arrived and the difference, and hours worked
- * against hours paid.
+ * Extra hours, one month at a time: what is still waiting to be paid, and a
+ * box per shift. Tick the ones that were paid, then mark them in one go; a
+ * paid shift tapped again goes back to pending.
  */
 @Composable
-private fun StatementRow(st: PeriodStatement, today: LocalDate, money: (Long) -> String, onClick: () -> Unit) {
+private fun ExtraHoursCard(entries: List<ExtraEntry>, onSetPaid: (Map<LocalDate, Set<Int>>, Boolean) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val accents = AppTheme.accents
+    val months = remember(entries) { ExtraHours.byMonth(entries) }
+    val shape = RoundedCornerShape(24.dp)
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .border(HairlineWidth, cs.softEdge, shape)
+            .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 8.dp)
+    ) {
+        if (months.isEmpty()) {
+            Text("Extra hours", style = MaterialTheme.typography.titleMedium, color = cs.onSurface)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Switch on Extra hours on a shift, and its hours are tracked here until they're paid.",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 10.dp)
+            )
+            return@Column
+        }
+
+        // Opens on the newest month with something still pending.
+        var monthKey by rememberSaveable(months.size) {
+            mutableStateOf((months.firstOrNull { it.pendingHours > 0.0 } ?: months.first()).month.toString())
+        }
+        val index = months.indexOfFirst { it.month.toString() == monthKey }.coerceAtLeast(0)
+        val month = months[index]
+        val selected = remember(monthKey) { mutableStateMapOf<String, Boolean>() }
+        val keyOf = { e: ExtraEntry -> "${e.date}#${e.index}" }
+        val picked = month.entries.filter { !it.paid && selected[keyOf(it)] == true }
+
+        Row(Modifier.padding(bottom = 14.dp), verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                Text("Extra hours", style = MaterialTheme.typography.titleMedium, color = cs.onSurface)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Older months are to the right of the list, as time runs back.
+                    MonthStep(AppIcons.ChevronLeft, "Earlier month", enabled = index < months.lastIndex) {
+                        monthKey = months[index + 1].month.toString()
+                    }
+                    Text(
+                        month.month.format(monthFmt),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant
+                    )
+                    MonthStep(AppIcons.ChevronRight, "Later month", enabled = index > 0) {
+                        monthKey = months[index - 1].month.toString()
+                    }
+                }
+            }
+            ExtraFigure(hoursLabel(month.pendingHours), "Pending", ShiftColors.ink(accents.warning, accents.isDark))
+            Spacer(Modifier.width(16.dp))
+            ExtraFigure(hoursLabel(month.paidHours), "Paid", cs.onSurface)
+        }
+
+        // Paid against pending, side by side.
+        val paidShare by animateFloatAsState(
+            if (month.paidHours + month.pendingHours > 0.0) (month.paidHours / (month.paidHours + month.pendingHours)).toFloat() else 0f,
+            tween(500, easing = FastOutSlowInEasing), label = "extraShare"
+        )
+        Row(Modifier.fillMaxWidth().height(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (paidShare > 0f) Box(Modifier.weight(paidShare).fillMaxHeight().clip(CircleShape).background(cs.primary))
+            if (paidShare < 1f) Box(Modifier.weight(1f - paidShare).fillMaxHeight().clip(CircleShape).background(accents.warning))
+        }
+        Spacer(Modifier.height(6.dp))
+
+        month.entries.forEachIndexed { i, entry ->
+            if (i > 0) GroupDivider()
+            val checked = entry.paid || selected[keyOf(entry)] == true
+            ExtraShiftRow(entry, checked) {
+                if (entry.paid) onSetPaid(mapOf(entry.date to setOf(entry.index)), false)
+                else selected[keyOf(entry)] = !(selected[keyOf(entry)] ?: false)
+            }
+        }
+
+        val unpaid = month.entries.filter { !it.paid }
+        if (unpaid.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            PrimaryPillButton(
+                text = when {
+                    picked.isNotEmpty() -> "Mark ${hoursLabel(picked.sumOf { it.hours })} as paid"
+                    else -> "Mark all ${hoursLabel(month.pendingHours)} as paid"
+                },
+                enabled = true,
+                onClick = {
+                    val targets = picked.ifEmpty { unpaid }
+                    onSetPaid(ExtraHours.targetsOf(targets), true)
+                    selected.clear()
+                }
+            )
+            Spacer(Modifier.height(8.dp))
+        } else {
+            Spacer(Modifier.height(6.dp))
+        }
+    }
+}
+
+@Composable
+private fun MonthStep(icon: Painter, desc: String, enabled: Boolean, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        Modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = desc },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon, null,
+            tint = cs.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.3f),
+            modifier = Modifier.size(14.dp)
+        )
+    }
+}
+
+@Composable
+private fun ExtraFigure(value: String, label: String, color: Color) {
+    Column(horizontalAlignment = Alignment.End) {
+        Text(value, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = color)
+        Text(label, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** One extra shift with its box: ticked when picked, or already paid. */
+@Composable
+private fun ExtraShiftRow(entry: ExtraEntry, checked: Boolean, onToggle: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val dot = rememberShiftAccent(entry.shift.colorValue)
+    val box by animateColorAsState(if (checked) cs.primary else Color.Transparent, tween(160), label = "extraBox")
+    val edge by animateColorAsState(if (checked) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.4f), tween(160), label = "extraEdge")
+    val boxShape = RoundedCornerShape(8.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .alpha(if (entry.paid) 0.5f else 1f)
+            .toggleable(
+                value = checked,
+                role = Role.Checkbox,
+                onValueChange = { onToggle() }
+            )
+            .semantics { stateDescription = if (entry.paid) "Paid, tap to mark pending" else if (checked) "Selected" else "Pending" }
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(24.dp)
+                .clip(boxShape)
+                .background(box)
+                .border(2.dp, edge, boxShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (checked) Icon(AppIcons.Check, null, tint = cs.onPrimary, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).background(dot, CircleShape))
+                Spacer(Modifier.width(6.dp))
+                Text(entry.shift.name, style = MaterialTheme.typography.titleSmall, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                entry.date.format(extraDayFmt) + " · " + shiftTimeLabel(entry.shift) + if (entry.paid) " · paid" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        Text(hoursLabel(entry.hours), style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+    }
+}
+
+/**
+ * One pay period: what's expected (from the ledger once added, else as
+ * calculated), hours worked against hours paid, and where it stands.
+ */
+@Composable
+private fun StatementRow(st: PeriodStatement, today: LocalDate, money: (Long) -> String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
     val recorded = st.recorded
     val calc = st.calculated
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.small)
-            .clickable(onClickLabel = "Open pay period", onClick = onClick)
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(st.range.label(), style = MaterialTheme.typography.titleSmall, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val moneyLine = when {
-                recorded != null ->
-                    "Expected ${money(recorded.totals.earnedCents)} · Received ${money(recorded.totals.receivedCents)}"
-                calc != null -> "Expected ${money(calc.expectedCents)}"
-                else -> ""
+    val amount = recorded?.totals?.earnedCents ?: calc?.expectedCents
+    val hours = listOfNotNull(
+        st.hoursDue?.takeIf { it > 0.0 }?.let { "${hoursLabel(it)} worked" },
+        st.hoursPaid?.let { "${hoursLabel(it)} paid" }
+    ).joinToString(" · ").ifEmpty { if (calc == null) "Separate period" else "No hours yet" }
+    val owed = recorded?.totals?.outstandingCents?.takeIf { it > 0L }
+
+    Column(modifier) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClickLabel = "Open pay period", onClick = onClick)
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(st.range.label(), style = MaterialTheme.typography.titleSmall, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (owed != null) "$hours · ${money(owed)} owed" else hours,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
             }
-            if (moneyLine.isNotEmpty()) {
-                Text(moneyLine, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            val hours = listOfNotNull(
-                st.hoursDue?.takeIf { it > 0.0 }?.let { "${hoursLabel(it)} worked" },
-                st.hoursPaid?.let { "${hoursLabel(it)} paid" }
-            )
-            if (hours.isNotEmpty()) {
-                Text(hours.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Spacer(Modifier.width(10.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                if (amount != null && amount > 0L) {
+                    Text(money(amount), style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                }
+                when {
+                    recorded != null -> StatusPill(recorded.status)
+                    today in st.range -> Pill("In progress", cs.onSurfaceVariant)
+                    calc != null && calc.expectedCents > 0L -> Pill("Not in wallet", accents.warning)
+                }
             }
         }
-        Spacer(Modifier.width(10.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            when {
-                recorded != null -> StatusPill(recorded.status)
-                today in st.range -> Pill("In progress", cs.onSurfaceVariant)
-                calc != null && calc.expectedCents > 0L -> Pill("Not in wallet", accents.warning)
+        GroupDivider()
+    }
+}
+
+/**
+ * Money received in each of the last six months, by the day it arrived. The
+ * best month is drawn solid; the bars rise once when the chart appears.
+ */
+@Composable
+private fun ReceivedByMonth(payments: List<PaymentEntry>, today: LocalDate, money: (Long) -> String, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    val current = YearMonth.from(today)
+    val months = remember(current) { (5 downTo 0).map { current.minusMonths(it.toLong()) } }
+    val totals = remember(payments, months) {
+        val byMonth = payments.groupBy { YearMonth.from(it.payment.day) }
+        months.map { m -> byMonth[m].orEmpty().sumOf { it.payment.amountCents } }
+    }
+    val max = totals.maxOrNull()?.takeIf { it > 0L } ?: 1L
+    val best = totals.indexOf(totals.max())
+    val rise = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { rise.animateTo(1f, tween(700, easing = FastOutSlowInEasing)) }
+
+    Column(modifier.fillMaxWidth()) {
+        SectionHeader(
+            title = "Received by month",
+            trailing = {
+                Text(
+                    if (months.first().year == months.last().year) "${months.last().year}"
+                    else "${months.first().year}–${months.last().year}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant
+                )
             }
-            if (recorded != null) {
-                val t = recorded.totals
-                when {
-                    t.outstandingCents > 0L -> {
-                        Spacer(Modifier.height(4.dp))
-                        Text("${money(t.outstandingCents)} owed", style = MaterialTheme.typography.labelMedium, color = accents.negative)
-                    }
-                    t.differenceCents != 0L -> {
-                        Spacer(Modifier.height(4.dp))
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth().height(150.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            months.forEachIndexed { i, m ->
+                val cents = totals[i]
+                val fill = when {
+                    cents > 0L && i == best -> cs.primary
+                    m == current -> cs.surfaceVariant
+                    else -> cs.outline
+                }
+                Column(
+                    Modifier.weight(1f).fillMaxHeight(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Bottom
+                ) {
+                    if (cents > 0L) {
+                        // Whole units: the bar is the detail, the label a reading of it.
                         Text(
-                            signedCents(t.differenceCents, money(0).takeWhile { !it.isDigit() }),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (t.differenceCents < 0L) accents.negative else accents.positive
+                            money((cents + 50) / 100 * 100).dropLast(3),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = cs.onSurfaceVariant,
+                            maxLines = 1
                         )
+                        Spacer(Modifier.height(6.dp))
                     }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height((92.dp * (cents.toFloat() / max) * rise.value).coerceAtLeast(4.dp))
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(fill)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        m.format(shortMonthFmt),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (m == current) cs.onSurface else cs.onSurfaceVariant
+                    )
                 }
             }
         }
     }
 }
 
-/** A label, earned / owed figures, and how much of it has been received. */
+/** Which owed earning a payment is for — one tap opens its payment form. */
 @Composable
-private fun BreakdownBar(
-    label: String,
-    totals: LedgerTotals,
+private fun OwedPickerSheet(
+    owed: List<EarningBalance>,
     money: (Long) -> String,
-    icon: Painter? = null,
-    iconTint: Color = Color.Unspecified
+    onPick: (Long) -> Unit,
+    onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val accents = AppTheme.accents
-    Column(Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (icon != null) {
-                Icon(icon, null, tint = iconTint, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
+    val sheetState = rememberAppSheetState()
+    val scope = rememberCoroutineScope()
+    AppSheet(
+        onDismiss = onDismiss,
+        sheetState = sheetState,
+        title = "Record a payment",
+        caption = "Which earning is it for?"
+    ) {
+        Spacer(Modifier.height(14.dp))
+        if (owed.isEmpty()) {
+            EmptyHint("Nothing is owed to you right now.")
+        } else {
+            Column(
+                Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                owed.forEach { b ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable { scope.launch { sheetState.hide(); onPick(b.earning.id) } }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TypeBadge(b.earning.type)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(b.earning.title, style = MaterialTheme.typography.titleSmall, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(b.earning.period.label(), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text("${money(b.outstandingCents)} owed", style = MaterialTheme.typography.labelLarge, color = cs.onSurface)
+                    }
+                }
             }
-            Text(
-                label,
-                style = MaterialTheme.typography.titleSmall,
-                color = cs.onSurface,
-                modifier = Modifier.weight(1f),
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
-            Text(money(totals.earnedCents), style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
         }
-        Spacer(Modifier.height(6.dp))
-        ProgressTrack(fraction = totals.receivedFraction, fill = accents.positive, track = cs.surfaceVariant, height = 6.dp)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            if (totals.outstandingCents == 0L) "All received"
-            else "${money(totals.receivedCents)} received · ${money(totals.outstandingCents)} owed",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (totals.outstandingCents == 0L) accents.positive else cs.onSurfaceVariant
-        )
     }
 }
 
@@ -571,11 +951,13 @@ private fun BreakdownBar(
 //  Earnings
 // ══════════════════════════════════════════════════════════════
 
+/**
+ * Everything beyond a pay period's regular pay — overtime, bonuses, tips,
+ * other work — and every payment that has come in, newest first.
+ */
 @Composable
 private fun EarningsPane(
     balances: List<EarningBalance>,
-    filter: LedgerFilter,
-    onFilter: (LedgerFilter) -> Unit,
     period: DateRange?,
     onClearPeriod: () -> Unit,
     money: (Long) -> String,
@@ -583,79 +965,127 @@ private fun EarningsPane(
     onAdd: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val inPeriod = remember(balances, period) { Ledger.filter(balances, LedgerFilter.ALL, period) }
-    val shown = remember(balances, filter, period) { Ledger.filter(balances, filter, period) }
+    val cs = MaterialTheme.colorScheme
+    val inScope = remember(balances, period) { Ledger.filter(balances, LedgerFilter.ALL, period) }
+    val other = remember(inScope) { inScope.filter { it.earning.type !in BasePayTypes } }
+    val payments = remember(inScope) { Ledger.history(inScope) }
+    val byMonth = remember(payments) { payments.groupBy { YearMonth.from(it.payment.day) } }
 
-    Column(modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(end = AppSpace.screenH),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                Modifier
-                    .weight(1f)
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = AppSpace.screenH, end = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LedgerFilter.entries.forEach { f ->
-                    val count = Ledger.filter(inPeriod, f).size
-                    FilterPill(text = "${f.label} · $count", selected = f == filter, onClick = { onFilter(f) })
-                }
-                if (period != null) {
-                    PillButton(text = period.shortLabel(), onClick = onClearPeriod, icon = AppIcons.Close, selected = true)
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(start = AppSpace.screenH, end = AppSpace.screenH, top = 16.dp, bottom = 32.dp)
+    ) {
+        if (period != null) {
+            item(key = "period") {
+                Row(
+                    Modifier
+                        .padding(bottom = 8.dp)
+                        .height(36.dp)
+                        .clip(CircleShape)
+                        .background(cs.primary)
+                        .clickable(onClickLabel = "Show every period", onClick = onClearPeriod)
+                        .padding(start = 14.dp, end = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(period.shortLabel(), style = MaterialTheme.typography.labelLarge, color = cs.onPrimary)
+                    Spacer(Modifier.width(6.dp))
+                    Icon(AppIcons.Close, null, tint = cs.onPrimary, modifier = Modifier.size(14.dp))
                 }
             }
-            AddButton(onAdd)
         }
-        Spacer(Modifier.height(12.dp))
 
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            contentPadding = PaddingValues(start = AppSpace.screenH, end = AppSpace.screenH, top = 2.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (shown.isEmpty()) {
-                item {
-                    SoftCard(Modifier.fillMaxWidth()) {
-                        Text(
-                            when {
-                                balances.isEmpty() -> "No earnings yet"
-                                filter == LedgerFilter.OWED -> "Nothing owed"
-                                filter == LedgerFilter.PAID -> "Nothing fully paid yet"
-                                else -> "Nothing in this period"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Add what you earned for a period, then record payments as they arrive.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(14.dp))
-                        SheetActionButton(text = "Add an earning", icon = AppIcons.Add, onClick = onAdd)
+        item(key = "otherHeader") {
+            SectionHeader(
+                title = "Other income",
+                modifier = Modifier.padding(top = 8.dp),
+                trailing = {
+                    Row(
+                        Modifier
+                            .height(36.dp)
+                            .clip(CircleShape)
+                            .background(cs.surfaceVariant)
+                            .clickable(onClickLabel = "Add an earning", role = Role.Button, onClick = onAdd)
+                            .padding(start = 10.dp, end = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(AppIcons.Add, null, tint = cs.onSurface, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add", style = MaterialTheme.typography.labelLarge, color = cs.onSurface)
                     }
                 }
+            )
+        }
+        if (other.isEmpty()) {
+            item(key = "otherEmpty") {
+                Text(
+                    "Overtime, bonuses, tips or other work you're owed beyond your regular pay. " +
+                        "Your regular pay is under Pay periods on the Balance tab.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
             }
-            items(shown, key = { it.earning.id }) { balance ->
-                EarningCard(balance, money) { onOpenEarning(balance.earning.id) }
+        }
+        items(other, key = { "earning-${it.earning.id}" }) { balance ->
+            EarningRow(balance, money, Modifier.animateItem()) { onOpenEarning(balance.earning.id) }
+        }
+
+        item(key = "paymentsHeader") {
+            SectionHeader(
+                title = "Payments",
+                modifier = Modifier.padding(top = 28.dp),
+                trailing = if (payments.isEmpty()) null else {
+                    {
+                        Text(
+                            "${money(payments.sumOf { it.payment.amountCents })} received",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant
+                        )
+                    }
+                }
+            )
+        }
+        if (payments.isEmpty()) {
+            item(key = "paymentsEmpty") {
+                Text(
+                    "Nothing received yet. Use Payment on the Balance tab when money comes in.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+            }
+        }
+        byMonth.forEach { (month, list) ->
+            item(key = "month-$month") {
+                Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 2.dp)) {
+                    SheetLabel(month.format(monthFmt))
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        money(list.sumOf { it.payment.amountCents }),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = cs.onSurfaceVariant
+                    )
+                }
+            }
+            items(list, key = { "payment-${it.payment.id}" }) { entry ->
+                PaymentHistoryRow(entry, money) { onOpenEarning(entry.earning.id) }
             }
         }
     }
 }
 
 @Composable
-private fun EarningCard(balance: EarningBalance, money: (Long) -> String, onClick: () -> Unit) {
+private fun EarningRow(balance: EarningBalance, money: (Long) -> String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val accents = AppTheme.accents
     val e = balance.earning
-    SoftCard(modifier = Modifier.fillMaxWidth(), onClick = onClick, contentPadding = PaddingValues(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(modifier) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClickLabel = "Open earning", onClick = onClick)
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             TypeBadge(e.type)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -674,21 +1104,7 @@ private fun EarningCard(balance: EarningBalance, money: (Long) -> String, onClic
                 StatusPill(balance.status)
             }
         }
-        Spacer(Modifier.height(12.dp))
-        ProgressTrack(fraction = balance.paidFraction, fill = accents.positive, track = cs.surfaceVariant, height = 6.dp)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            when (balance.status) {
-                PaymentStatus.PAID ->
-                    if (balance.differenceCents > 0L) "Received in full · ${money(balance.differenceCents)} over"
-                    else "Received in full"
-                PaymentStatus.PARTIAL -> "${money(balance.paidCents)} received · ${money(balance.outstandingCents)} owed"
-                PaymentStatus.UNPAID -> "${money(balance.outstandingCents)} owed"
-                PaymentStatus.SETTLED -> "Settled ${money(-balance.differenceCents)} short"
-            },
-            style = MaterialTheme.typography.labelMedium,
-            color = if (balance.status == PaymentStatus.PAID) accents.positive else cs.onSurfaceVariant
-        )
+        GroupDivider()
     }
 }
 
@@ -1549,42 +1965,6 @@ private fun PaymentSheet(
 }
 
 @Composable
-private fun PaymentHistorySheet(entries: List<PaymentEntry>, money: (Long) -> String, onDismiss: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    val byMonth = remember(entries) { entries.groupBy { YearMonth.from(it.payment.day) } }
-    val total = remember(entries) { entries.sumOf { it.payment.amountCents } }
-    AppSheet(
-        onDismiss = onDismiss,
-        sheetState = rememberAppSheetState(),
-        title = "Payment history",
-        caption = "${entries.size} payment${if (entries.size == 1) "" else "s"} · ${money(total)} received"
-    ) {
-        Spacer(Modifier.height(14.dp))
-        Column(
-            Modifier
-                .heightIn(max = 460.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            byMonth.forEach { (month, list) ->
-                Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp)) {
-                    SheetLabel(month.format(monthFmt))
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        money(list.sumOf { it.payment.amountCents }),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = cs.onSurfaceVariant
-                    )
-                }
-                list.forEachIndexed { i, entry ->
-                    if (i > 0) RowRule()
-                    PaymentHistoryRow(entry, money, onClick = null)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun PaymentHistoryRow(entry: PaymentEntry, money: (Long) -> String, onClick: (() -> Unit)?) {
     val cs = MaterialTheme.colorScheme
     Row(
@@ -1698,22 +2078,6 @@ private fun ProgressTrack(fraction: Float, fill: Color, track: Color, height: an
     }
 }
 
-/** The compact "add an earning" action, placed where the earnings are. */
-@Composable
-private fun AddButton(onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    CircleIconButton(
-        icon = AppIcons.Add,
-        contentDescription = "Add an earning",
-        onClick = onClick,
-        diameter = 38.dp,
-        iconSize = 18.dp,
-        container = cs.primary,
-        tint = cs.onPrimary,
-        elevation = 0.dp
-    )
-}
-
 /**
  * A header that slides up out of the way as content below it scrolls up, and
  * back down on the first scroll down (Material's "enter always"). It only ever
@@ -1756,39 +2120,24 @@ private fun Modifier.collapsing(state: CollapsingHeaderState): Modifier =
     }
 
 @Composable
-private fun RowRule() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)))
-}
+private fun RowRule() = GroupDivider()
 
 @Composable
-private fun PrimaryAction(text: String, enabled: Boolean = true, onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.fillMaxWidth(),
-        shape = CircleShape,
-        color = cs.primary,
-        contentColor = cs.onPrimary
-    ) {
-        Box(Modifier.padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-            Text(text, style = MaterialTheme.typography.labelLarge)
-        }
-    }
-}
+private fun PrimaryAction(text: String, enabled: Boolean = true, onClick: () -> Unit) =
+    PrimaryPillButton(text = text, enabled = enabled, onClick = onClick)
 
 @Composable
 private fun SecondaryAction(text: String, icon: Painter, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
         shape = CircleShape,
-        color = cs.surfaceVariant,
-        contentColor = cs.onSurface
+        color = cs.background,
+        contentColor = cs.onSurface,
+        border = androidx.compose.foundation.BorderStroke(HairlineWidth, cs.softEdge)
     ) {
         Row(
-            Modifier.padding(vertical = 15.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {

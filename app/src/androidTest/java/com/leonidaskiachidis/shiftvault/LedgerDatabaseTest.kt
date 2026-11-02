@@ -43,7 +43,7 @@ class LedgerDatabaseTest {
         }
 
         // Validates the upgraded schema against the exported one as well.
-        val db = helper.runMigrationsAndValidate(dbName, 3, true)
+        val db = helper.runMigrationsAndValidate(dbName, 4, true)
 
         db.query("SELECT name, hourlyRate FROM calendar_shifts").use { c ->
             assertEquals(1, c.count)
@@ -87,6 +87,37 @@ class LedgerDatabaseTest {
             assertEquals(127500L, c.getLong(0))
             assertTrue(c.isNull(1))
         }
+        db.close()
+    }
+
+    @Test
+    fun migration3To4_marksOldOvertimePresetsExtra_andNothingElse() {
+        val name = "extra-migration-3-4.db"
+        fun insert(db: androidx.sqlite.db.SupportSQLiteDatabase, shiftName: String, multiplier: Double, type: String = "WORKED") =
+            db.execSQL(
+                "INSERT INTO calendar_shifts (date, position, name, startTime, endTime, colorValue, hourlyRate, " +
+                    "payMultiplier, bonus, breakMinutes, paidBreak, dayType, paidLeaveHours, location, jobId, notes, iconName) " +
+                    "VALUES ('2026-10-05', 0, '$shiftName', '09:00', '17:00', 0, 10.0, $multiplier, 0.0, 0, 0, '$type', 8.0, '', 'default', '', NULL)"
+            )
+        helper.createDatabase(name, 3).apply {
+            insert(this, "Normal", 1.0)
+            insert(this, "OT", 1.5)
+            insert(this, "Holiday", 1.75)
+            insert(this, "Double", 2.0)
+            insert(this, "Leave", 1.5, "PAID_LEAVE")
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(name, 4, true)
+
+        val extra = mutableMapOf<String, Int>()
+        db.query("SELECT name, isExtra, extraPaid, payMultiplier FROM calendar_shifts").use { c ->
+            while (c.moveToNext()) {
+                extra[c.getString(0)] = c.getInt(1)
+                assertEquals(0, c.getInt(2))
+            }
+        }
+        assertEquals(mapOf("Normal" to 0, "OT" to 1, "Holiday" to 0, "Double" to 1, "Leave" to 0), extra)
         db.close()
     }
 

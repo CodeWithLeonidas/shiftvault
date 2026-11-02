@@ -42,8 +42,8 @@ enum class PayMode(val label: String) {
 /** Which worked hours count as overtime. */
 @Serializable
 enum class OvertimeSource(val label: String) {
-    /** Shifts set to 1.5×, 1.75× or 2× in the shift form. */
-    MARKED_SHIFTS("Marked shifts"),
+    /** Shifts switched to Extra in the shift form (the name is kept for stored profiles). */
+    MARKED_SHIFTS("Extra shifts"),
     /** Hours past the contracted hours of a week. */
     WEEKLY_LIMIT("Over weekly hours"),
     /** Hours past a set number in one day. */
@@ -281,13 +281,13 @@ object Compensation {
                     val piece = overtimeOf[raw]
                     val hours = PayEngine.workedHours(s)
                     val ot = piece?.overtime ?: 0.0
-                    val regularMultiplier =
-                        if (setup.overtimeSource == OvertimeSource.MARKED_SHIFTS) 1.0 else PayEngine.effectiveMultiplier(s)
-                    total += (hours - ot) * s.hourlyRate * regularMultiplier
+                    val own = PayEngine.effectiveMultiplier(s)
+                    total += (hours - ot) * s.hourlyRate * own
                     total += when (setup.overtimeCompensation) {
-                        OvertimeCompensation.PAID -> ot * s.hourlyRate * (piece?.overtimeMultiplier ?: 1.0)
+                        OvertimeCompensation.PAID -> ot * s.hourlyRate * (piece?.overtimeMultiplier ?: own)
                         OvertimeCompensation.TIME_OFF -> 0.0
-                        OvertimeCompensation.TRACK_ONLY -> ot * s.hourlyRate
+                        // Counted, and paid like any other hour of that shift.
+                        OvertimeCompensation.TRACK_ONLY -> ot * s.hourlyRate * own
                     }
                 }
             }
@@ -324,7 +324,9 @@ object Compensation {
                 val multiplier: Double
                 when (setup.overtimeSource) {
                     OvertimeSource.MARKED_SHIFTS -> {
-                        overtime = if (own > 1.0) hours else 0.0
+                        // The Extra switch, not the multiplier, says what is extra;
+                        // an extra shift is valued at its own multiplier (1× unless set).
+                        overtime = if (shift.isExtra) hours else 0.0
                         multiplier = own
                     }
                     OvertimeSource.WEEKLY_LIMIT, OvertimeSource.DAILY_LIMIT -> {

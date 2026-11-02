@@ -19,11 +19,12 @@ class CompensationTest {
         bonus: Double = 0.0,
         breakMinutes: Int = 0,
         type: DayType = DayType.WORKED,
-        leaveHours: Double = 8.0
+        leaveHours: Double = 8.0,
+        extra: Boolean = false
     ) = Shift(
         name = "S", startTime = start, endTime = end, colorValue = 0,
         hourlyRate = rate, payMultiplier = multiplier, bonus = bonus, breakMinutes = breakMinutes,
-        dayType = type, paidLeaveHours = leaveHours, jobId = "job"
+        dayType = type, paidLeaveHours = leaveHours, jobId = "job", isExtra = extra
     )
 
     private fun month(ym: YearMonth) = DateRange(ym.atDay(1), ym.atEndOfMonth())
@@ -67,7 +68,7 @@ class CompensationTest {
     fun `hourly with default rules is exactly the existing calculation`() {
         val shifts = mapOf(
             LocalDate.of(2026, 10, 1) to listOf(shift(rate = 12.35, breakMinutes = 30, bonus = 4.5)),
-            LocalDate.of(2026, 10, 2) to listOf(shift(rate = 12.35, multiplier = 1.5), shift("18:00", "22:30", rate = 9.99)),
+            LocalDate.of(2026, 10, 2) to listOf(shift(rate = 12.35, multiplier = 1.5, extra = true), shift("18:00", "22:30", rate = 9.99)),
             LocalDate.of(2026, 10, 3) to listOf(shift("22:00", "06:00", rate = 13.0, multiplier = 1.75)),
             LocalDate.of(2026, 10, 4) to listOf(shift(rate = 11.0, type = DayType.PAID_LEAVE, leaveHours = 7.5)),
             LocalDate.of(2026, 10, 5) to listOf(shift(rate = 11.0, type = DayType.UNPAID_LEAVE, bonus = 50.0)),
@@ -79,8 +80,8 @@ class CompensationTest {
         assertEquals(old.hours, pay.hoursWorked, 1e-9)
         assertEquals(old.shifts, pay.shiftsWorked)
         assertEquals(Compensation.totals(hourly(), shifts, october), old.copy(earnings = pay.expectedCents / 100.0))
-        // Marked shifts are its overtime: 8h at 1.5× and 8h at 1.75×.
-        assertEquals(16.0, pay.overtimeHours, 1e-9)
+        // Only the shift switched to Extra is overtime; the 1.75× one is premium time.
+        assertEquals(8.0, pay.overtimeHours, 1e-9)
         assertEquals(450L, pay.extrasCents)
     }
 
@@ -101,11 +102,54 @@ class CompensationTest {
     fun `hourly overtime banked as time off is not paid`() {
         val shifts = mapOf(
             LocalDate.of(2026, 10, 1) to listOf(shift(rate = 10.0)),
-            LocalDate.of(2026, 10, 2) to listOf(shift(rate = 10.0, multiplier = 1.5))
+            LocalDate.of(2026, 10, 2) to listOf(shift(rate = 10.0, multiplier = 1.5, extra = true))
         )
         val pay = Compensation.forRange(hourly(PaySetup(overtimeCompensation = OvertimeCompensation.TIME_OFF)), shifts, october)
         assertEquals(8_000L, pay.expectedCents)
         assertEquals(12.0, pay.timeOffHours, 1e-9)
+    }
+
+    @Test
+    fun `a multiplier alone no longer makes a shift extra, and pay is unchanged`() {
+        val shifts = mapOf(LocalDate.of(2026, 10, 2) to listOf(shift(rate = 10.0, multiplier = 1.5)))
+        val pay = Compensation.forRange(hourly(), shifts, october)
+        assertEquals(0.0, pay.overtimeHours, 1e-9)
+        assertEquals(12_000L, pay.expectedCents)
+    }
+
+    @Test
+    fun `an extra shift needs no multiplier`() {
+        val shifts = mapOf(LocalDate.of(2026, 10, 2) to listOf(shift(rate = 10.0, extra = true)))
+        val pay = Compensation.forRange(hourly(), shifts, october)
+        assertEquals(8.0, pay.overtimeHours, 1e-9)
+        assertEquals(8_000L, pay.expectedCents)
+        assertEquals(8_000L, pay.overtimeCents)
+    }
+
+    @Test
+    fun `tracked-only extra hours are paid like any other hour of the shift`() {
+        val shifts = mapOf(LocalDate.of(2026, 10, 2) to listOf(shift(rate = 10.0, multiplier = 1.25, extra = true)))
+        val pay = Compensation.forRange(hourly(PaySetup(overtimeCompensation = OvertimeCompensation.TRACK_ONLY)), shifts, october)
+        assertEquals(8.0, pay.overtimeHours, 1e-9)
+        assertEquals(10_000L, pay.expectedCents)
+    }
+
+    @Test
+    fun `old 1_5x and 2x shifts become extra, holiday shifts don't, pay untouched`() {
+        assertTrue(shift(multiplier = 1.5).withLegacyExtraFlag().isExtra)
+        assertTrue(shift(multiplier = 2.0).withLegacyExtraFlag().isExtra)
+        assertFalse(shift(multiplier = 1.75).withLegacyExtraFlag().isExtra)
+        assertFalse(shift().withLegacyExtraFlag().isExtra)
+        assertFalse(shift(multiplier = 1.5, type = DayType.PAID_LEAVE).withLegacyExtraFlag().isExtra)
+        assertEquals(1.5, shift(multiplier = 1.5).withLegacyExtraFlag().payMultiplier, 0.0)
+    }
+
+    @Test
+    fun `a salaried extra shift is valued at the reference rate times its own multiplier`() {
+        val shifts = mapOf(LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", extra = true)))
+        val pay = Compensation.forRange(salaried(rate = 10.0), shifts, october)
+        assertEquals(4_000L, pay.overtimeCents)
+        assertEquals(134_000L, pay.expectedCents)
     }
 
     // ══════════ Fixed salary ══════════
@@ -153,7 +197,7 @@ class CompensationTest {
     fun `marked overtime is paid on top at the reference rate`() {
         val shifts = mapOf(
             LocalDate.of(2026, 10, 1) to listOf(shift()),
-            LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", multiplier = 1.5))
+            LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", multiplier = 1.5, extra = true))
         )
         val pay = Compensation.forRange(salaried(rate = 10.0), shifts, october)
         assertEquals(4.0, pay.overtimeHours, 1e-9)
@@ -163,7 +207,7 @@ class CompensationTest {
 
     @Test
     fun `without a reference rate overtime is hours only and the salary still stands`() {
-        val shifts = mapOf(LocalDate.of(2026, 10, 3) to listOf(shift(multiplier = 1.5)))
+        val shifts = mapOf(LocalDate.of(2026, 10, 3) to listOf(shift(multiplier = 1.5, extra = true)))
         val pay = Compensation.forRange(salaried(rate = 0.0), shifts, october)
         assertNull(pay.overtimeCents)
         assertTrue(pay.overtimeUnvalued)
@@ -201,7 +245,7 @@ class CompensationTest {
 
     @Test
     fun `overtime as time off or tracked only adds no money`() {
-        val shifts = mapOf(LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", multiplier = 1.5)))
+        val shifts = mapOf(LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", multiplier = 1.5, extra = true)))
         val off = Compensation.forRange(salaried(rate = 10.0, compensation = OvertimeCompensation.TIME_OFF), shifts, october)
         assertEquals(6.0, off.timeOffHours, 1e-9)
         assertEquals(130_000L, off.expectedCents)
@@ -262,7 +306,7 @@ class CompensationTest {
     @Test
     fun `expected pay becomes salary, overtime and extras lines with their hours`() {
         val shifts = weekdays(YearMonth.of(2026, 10)) +
-            (LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", multiplier = 1.5, bonus = 20.0)))
+            (LocalDate.of(2026, 10, 3) to listOf(shift("10:00", "14:00", multiplier = 1.5, bonus = 20.0, extra = true)))
         val job = salaried(rate = 10.0)
         val pay = Compensation.forRange(job, shifts, october)
         val lines = Statements.expectedEarnings(job, pay)

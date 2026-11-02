@@ -1,91 +1,43 @@
 package com.leonidaskiachidis.shiftvault
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.leonidaskiachidis.shiftvault.ui.theme.AppTheme
 import com.leonidaskiachidis.shiftvault.ui.theme.ShiftVaultTheme
 import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
-
-// ══════════════════════════════════════════════════════════════
-//  Filtering / sorting model
-// ══════════════════════════════════════════════════════════════
-
-private enum class ShiftFilter(val label: String) {
-    ALL("All"),
-    MORNING("Morning"),
-    EVENING("Evening"),
-    NIGHT("Night"),
-    ALL_DAY("All day")
-}
-
-private enum class ShiftSort(val label: String) {
-    RECENT("Recent"),
-    DURATION("Duration"),
-    PAY("Pay")
-}
-
-private fun isAllDay(shift: Shift) = shift.startTime == "00:00" && shift.endTime == "23:59"
-
-private fun matchesFilter(shift: Shift, filter: ShiftFilter): Boolean {
-    if (filter == ShiftFilter.ALL) return true
-    if (isAllDay(shift)) return filter == ShiftFilter.ALL_DAY
-    if (filter == ShiftFilter.ALL_DAY) return false
-
-    val hour = shift.startTime.substringBefore(":").toIntOrNull() ?: 9
-    return when (filter) {
-        ShiftFilter.MORNING -> hour in 5..11
-        ShiftFilter.EVENING -> hour in 12..18
-        ShiftFilter.NIGHT -> hour !in 5..18
-        else -> true
-    }
-}
-
-private fun timeLabel(shift: Shift): String =
-    if (isAllDay(shift)) "All day" else "${shift.startTime} — ${shift.endTime}"
-
-private fun durationLabel(hours: Double): String =
-    if (hours % 1.0 == 0.0) "${hours.toInt()}h" else String.format("%.1fh", hours)
-
-private fun dayTypeText(type: DayType): String = when (type) {
-    DayType.WORKED -> "Worked"
-    DayType.PAID_LEAVE -> "Paid leave"
-    DayType.UNPAID_LEAVE -> "Unpaid leave"
-}
-
-/** "1.75" rather than "1.750000" — trims the noise off the multiplier. */
-private fun multiplierText(value: Double): String =
-    "×" + "%.2f".format(value).trimEnd('0').trimEnd('.')
 
 // ══════════════════════════════════════════════════════════════
 //  Screen
@@ -123,303 +75,126 @@ fun TemplatesScreen(
         catch (_: Exception) { currencyCode }
     }
 
-    var query by rememberSaveable { mutableStateOf("") }
-    var filter by rememberSaveable { mutableStateOf(ShiftFilter.ALL) }
-    var sort by rememberSaveable { mutableStateOf(ShiftSort.RECENT) }
-    var filtersVisible by rememberSaveable { mutableStateOf(false) }
-
     // Everything filed under the job currently selected. A brand-new profile
     // has nothing here yet, which is exactly the point.
     val profileTemplates = remember(templates, activeProfile.id) {
         templates.filter { it.jobId == activeProfile.id }
     }
 
-    // Keep the original index so onEdit / onDelete stay correct after filtering.
-    val visible = remember(templates, activeProfile.id, query, filter, sort) {
-        val q = query.trim().lowercase()
-        val base = templates.withIndex()
-            .filter { (_, shift) ->
-                shift.jobId == activeProfile.id &&
-                        (q.isEmpty() ||
-                        shift.name.lowercase().contains(q) ||
-                        shift.notes.lowercase().contains(q)) &&
-                        matchesFilter(shift, filter)
-            }
-        when (sort) {
-            ShiftSort.RECENT -> base
-            // Same figures the cards display, so the order matches what is read.
-            ShiftSort.DURATION -> base.sortedByDescending { PayEngine.payableHours(it.value) }
-            ShiftSort.PAY -> base.sortedByDescending { PayEngine.earnings(it.value) }
-        }.map { it.index to it.value }
+    // Keep each shift's index in the full library, so onEdit / onDelete
+    // reach the right one.
+    val visible = remember(templates, activeProfile.id) {
+        templates.withIndex()
+            .filter { (_, shift) -> shift.jobId == activeProfile.id }
+            .map { it.index to it.value }
     }
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .background(cs.background)
             .statusBarsPadding()
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-
-            // ── Header ──
-            ScreenHeader(
-                title = "My Shifts",
-                trailing = {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (onCopyFromProfile != null) {
-                            CircleIconButton(
-                                icon = AppIcons.Copy,
-                                contentDescription = "Copy shifts from another job profile",
-                                onClick = onCopyFromProfile,
-                                container = cs.surfaceVariant,
-                                tint = cs.onSurface
-                            )
-                        }
-                        CircleIconButton(
-                            icon = AppIcons.Filters,
-                            contentDescription = if (filtersVisible) "Hide filters" else "Show filters",
-                            onClick = { filtersVisible = !filtersVisible },
-                            container = if (filtersVisible) cs.surface else cs.surfaceVariant,
-                            tint = cs.onSurface
-                        )
-                    }
-                }
+        // ── Header ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpace.screenH)
+                .padding(top = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "My Shifts",
+                style = ScreenTitleStyle,
+                color = cs.onBackground,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
             )
-
-            // Sits where the subtitle was: the list below is this job's shifts,
-            // so the job has to be readable without leaving the screen.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = AppSpace.screenH)
-                    .padding(top = 2.dp)
-            ) {
-                ProfileChip(profile = activeProfile, onClick = onOpenProfiles)
-            }
-
-            AnimatedVisibility(
-                visible = filtersVisible,
-                enter = expandVertically(animationSpec = tween(220)) + fadeIn(tween(200)),
-                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(tween(120))
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                Spacer(Modifier.height(14.dp))
-
-                // ── Search ──
-                SearchField(
-                    value = query,
-                    onValueChange = { query = it },
-                    placeholder = "Search by name or note...",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = AppSpace.screenH)
+            if (onCopyFromProfile != null) {
+                HeaderButton(
+                    icon = AppIcons.Copy,
+                    contentDescription = "Copy shifts from another job",
+                    onClick = onCopyFromProfile
                 )
-
-                Spacer(Modifier.height(16.dp))
-
-                // ── Period pills ──
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = AppSpace.screenH),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    ShiftFilter.entries.forEach { entry ->
-                        val count = profileTemplates.count { matchesFilter(it, entry) }
-                        FilterPill(
-                            text = if (entry == ShiftFilter.ALL) "All ($count)" else entry.label,
-                            selected = filter == entry,
-                            onClick = { filter = entry }
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                // ── Sort tabs ──
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = AppSpace.screenH),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Sort by:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = cs.onSurfaceVariant
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    ShiftSort.entries.forEach { entry ->
-                        TextTab(
-                            text = entry.label,
-                            selected = sort == entry,
-                            onClick = { sort = entry }
-                        )
-                    }
-                }
-                }
+                Spacer(Modifier.width(8.dp))
             }
-
-            Spacer(Modifier.height(8.dp))
-
-            // ── List ──
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                when {
-                    profileTemplates.isEmpty() ->
-                        EmptyProfileShiftsState(
-                            profile = activeProfile,
-                            canCopy = onCopyFromProfile != null,
-                            onCopy = { onCopyFromProfile?.invoke() },
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                    visible.isEmpty() ->
-                        NoMatchesState(Modifier.fillMaxSize(), cs) {
-                            query = ""; filter = ShiftFilter.ALL
-                        }
-
-                    else -> LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = AppSpace.screenH,
-                            end = AppSpace.screenH,
-                            // Clears the 20.dp header fade below, plus the card's
-                            // own drop shadow, so the first card is never touched
-                            // by either.
-                            top = 28.dp,
-                            bottom = 108.dp
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        items(
-                            items = visible,
-                            key = { (index, s) -> "$index-${s.name}-${s.startTime}-${s.colorValue}" }
-                        ) { (index, shift) ->
-                            ShiftCard(
-                                shift = shift,
-                                currencySymbol = currencySymbol,
-                                onEdit = { onEdit(index) },
-                                onDelete = {
-                                    scope.launch {
-                                        shiftManager.updateTemplates { current ->
-                                            if (index in current.indices)
-                                                current.toMutableList().also { it.removeAt(index) }
-                                            else current
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
-
-                // Soft fade so the list doesn't butt sharply against the filters
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .height(20.dp)
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    cs.background,
-                                    cs.background.copy(alpha = 0f)
-                                )
-                            )
-                        )
-                )
-            }
+            NewShiftButton(onClick = onCreateNew)
         }
 
-        // ── FAB ──
-        Surface(
-            onClick = onCreateNew,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = AppSpace.screenH, bottom = 24.dp)
-                .size(64.dp),
-            shape = CircleShape,
-            color = cs.primary,
-            contentColor = cs.onPrimary,
-            shadowElevation = 10.dp
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    AppIcons.Add, "New shift",
-                    tint = cs.onPrimary, modifier = Modifier.size(26.dp)
-                )
+        // The list below is this job's shifts, so the job has to be readable
+        // — and switchable — without leaving the screen.
+        ProfileSwitch(
+            profile = activeProfile,
+            onClick = onOpenProfiles,
+            detail = "${profileTemplates.size} saved",
+            modifier = Modifier.padding(start = AppSpace.screenH, top = 2.dp)
+        )
+
+        // ── List ──
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            when {
+                profileTemplates.isEmpty() ->
+                    EmptyProfileShiftsState(
+                        profile = activeProfile,
+                        canCopy = onCopyFromProfile != null,
+                        onCopy = { onCopyFromProfile?.invoke() },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = AppSpace.screenH,
+                        end = AppSpace.screenH,
+                        top = 18.dp,
+                        bottom = 24.dp
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = visible,
+                        key = { (index, s) -> "$index-${s.name}-${s.startTime}-${s.colorValue}" }
+                    ) { (index, shift) ->
+                        ShiftCard(
+                            shift = shift,
+                            currencySymbol = currencySymbol,
+                            salaried = activeProfile.pay.isFixed,
+                            onEdit = { onEdit(index) },
+                            onDelete = {
+                                scope.launch {
+                                    shiftManager.updateTemplates { current ->
+                                        if (index in current.indices)
+                                            current.toMutableList().also { it.removeAt(index) }
+                                        else current
+                                    }
+                                }
+                            },
+                            // Cards glide into place as shifts are added or removed.
+                            modifier = Modifier.animateItem()
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-// ══════════════════════════════════════════════════════════════
-//  Search field
-// ══════════════════════════════════════════════════════════════
-
+/** The header's main action: a solid pill, "+ New". */
 @Composable
-private fun SearchField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-    modifier: Modifier = Modifier
-) {
+private fun NewShiftButton(onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-
-    Surface(
-        modifier = modifier,
-        shape = CircleShape,
-        color = cs.surface,
-        shadowElevation = 2.dp,
-        border = if (AppTheme.accents.isDark) BorderStroke(1.dp, cs.outline) else null
+    Row(
+        Modifier
+            .height(44.dp)
+            .clip(CircleShape)
+            .background(cs.primary)
+            .clickable(onClickLabel = "Create a new shift", role = Role.Button, onClick = onClick)
+            .padding(start = 12.dp, end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                AppIcons.Search, null,
-                tint = cs.onSurfaceVariant, modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(14.dp))
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                if (value.isEmpty()) {
-                    Text(
-                        placeholder,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = cs.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
-                    cursorBrush = SolidColor(cs.primary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            if (value.isNotEmpty()) {
-                Spacer(Modifier.width(10.dp))
-                Icon(
-                    AppIcons.Close, "Clear search",
-                    tint = cs.onSurfaceVariant,
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { onValueChange("") }
-                )
-            }
-        }
+        Icon(AppIcons.Add, null, tint = cs.onPrimary, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("New", style = MaterialTheme.typography.labelLarge, color = cs.onPrimary)
     }
 }
 
@@ -427,159 +202,152 @@ private fun SearchField(
 //  Shift card
 // ══════════════════════════════════════════════════════════════
 
+/**
+ * One saved shift, washed in its own colour: what kind of day it is, its
+ * name, when it runs — large, with a 24-hour ring showing where in the day
+ * that falls — and what it pays.
+ */
 @Composable
 private fun ShiftCard(
     shift: Shift,
     currencySymbol: String,
+    /** On a salaried job a shift has no price of its own. */
+    salaried: Boolean,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
     val accents = AppTheme.accents
+    val isDark = accents.isDark
     var showDelete by remember { mutableStateOf(false) }
 
-    val color = rememberShiftAccent(shift.colorValue)
+    val base = rememberShiftColor(shift.colorValue)
+    val accent = rememberShiftAccent(base)
+    val ink = rememberShiftInk(base)
+    val wash = accent.copy(alpha = if (isDark) 0.22f else 0.14f)
+    val worked = shift.dayType == DayType.WORKED
     val hours = remember(shift) { PayEngine.payableHours(shift) }
+    val span = remember(shift) { PayEngine.grossSpanHours(shift) }
     val total = remember(shift) { PayEngine.earnings(shift) }
-    val payLabel =
-        if (total > 0.0) "$currencySymbol${"%.2f".format(total)}" else "No pay"
-    val subtitle = shift.location.ifBlank { shift.notes }
-    val hasChips = shift.dayType != DayType.WORKED ||
-            shift.payMultiplier != 1.0 ||
-            shift.bonus > 0.0 ||
-            (shift.breakMinutes > 0 && shift.paidBreak)
 
-    SoftCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        contentPadding = PaddingValues(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 14.dp)
+    val kind = when (shift.dayType) {
+        DayType.WORKED -> "Worked · ${hoursLabel(hours)}"
+        DayType.PAID_LEAVE -> "Paid leave · ${hoursLabel(hours)}"
+        DayType.UNPAID_LEAVE -> "Unpaid leave"
+    }
+    val subtitle = when (shift.dayType) {
+        DayType.WORKED -> null
+        DayType.PAID_LEAVE -> "counts as ${hoursLabel(hours)} paid"
+        DayType.UNPAID_LEAVE -> "no pay"
+    }
+
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(28.dp))
+            .background(cs.background)
+            .background(wash)
+            // The whole card opens the shift; only Delete does anything else.
+            .clickable(onClickLabel = "Edit ${shift.name}", onClick = onEdit)
+            .padding(18.dp)
     ) {
-        // ── Top: mark · name · pay badge ──
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ShiftIcon(shift.name, shift.iconName, shift.colorValue, size = 44.dp)
-            Spacer(Modifier.width(14.dp))
+        Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(6.dp).background(accent, CircleShape))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        kind,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ink,
+                        maxLines = 1
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(
                     shift.name,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontSize = 22.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp
+                    ),
                     color = cs.onSurface,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
-                if (subtitle.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (shift.location.isNotBlank()) {
-                            Icon(
-                                AppIcons.Location, null,
-                                tint = cs.onSurfaceVariant,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(5.dp))
-                        }
-                        Text(
-                            subtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = cs.onSurfaceVariant,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
             }
             Spacer(Modifier.width(12.dp))
+            DayRing(
+                start = shift.startTime,
+                spanHours = if (worked) span else 24.0,
+                allDay = !worked,
+                label = if (worked) hoursLabel(hours) else "Day",
+                color = accent,
+                ink = ink,
+                track = cs.background,
+                contentDescription = if (worked) "Runs ${shift.startTime} to ${shift.endTime}"
+                else "All day"
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                if (worked) shiftTimeLabel(shift) else "All day",
+                style = MaterialTheme.typography.headlineLarge.copy(
+                    fontSize = 28.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.8).sp
+                ),
+                color = cs.onSurface,
+                maxLines = 1
+            )
+            if (subtitle != null) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ink,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = 3.dp)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
-                    .clip(MaterialTheme.shapes.small)
-                    .background(color.copy(alpha = 0.20f))
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .height(34.dp)
+                    .clip(CircleShape)
+                    .background(cs.background)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
             ) {
                 Text(
-                    payLabel,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = cs.onSurface,
+                    when {
+                        total > 0.0 -> buildAnnotatedString {
+                            withStyle(SpanStyle(color = cs.onSurface, fontWeight = FontWeight.SemiBold)) {
+                                append("$currencySymbol${"%.2f".format(total)}")
+                            }
+                            append(" / shift")
+                        }
+                        shift.dayType == DayType.UNPAID_LEAVE -> buildAnnotatedString { append("Unpaid") }
+                        salaried -> buildAnnotatedString { append("Covered by your salary") }
+                        else -> buildAnnotatedString { append("No rate set") }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
                     maxLines = 1
                 )
             }
-        }
-
-        if (hasChips) {
-            Spacer(Modifier.height(14.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (shift.dayType != DayType.WORKED) {
-                    CardChip(
-                        text = dayTypeText(shift.dayType),
-                        container = if (shift.dayType == DayType.PAID_LEAVE)
-                            accents.morningSoft else accents.negative.copy(alpha = 0.12f),
-                        contentColor = if (shift.dayType == DayType.PAID_LEAVE)
-                            accents.positive else accents.negative
-                    )
-                }
-                if (shift.payMultiplier != 1.0 && shift.dayType == DayType.WORKED) {
-                    CardChip(
-                        text = "${multiplierText(shift.payMultiplier)} rate",
-                        container = accents.nightSoft,
-                        contentColor = accents.night
-                    )
-                }
-                if (shift.bonus > 0.0) {
-                    CardChip(
-                        text = "+$currencySymbol${"%.2f".format(shift.bonus)} bonus",
-                        container = accents.eveningSoft,
-                        contentColor = accents.evening
-                    )
-                }
-                if (shift.breakMinutes > 0 && shift.paidBreak) {
-                    CardChip(
-                        text = "Paid break",
-                        container = cs.surfaceVariant,
-                        contentColor = cs.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(cs.outline)
-        )
-        Spacer(Modifier.height(12.dp))
-
-        // ── Bottom: time · actions ──
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                AppIcons.Clock, null,
-                tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                if (shift.dayType == DayType.WORKED)
-                    "${timeLabel(shift)} (${durationLabel(hours)})"
-                else
-                    "${dayTypeText(shift.dayType)} · ${durationLabel(hours)}",
-                style = MaterialTheme.typography.bodyLarge,
-                color = cs.onSurface,
-                modifier = Modifier.weight(1f),
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
+            Spacer(Modifier.weight(1f))
             CardActionButton(
                 icon = AppIcons.Edit,
-                desc = "Edit",
-                container = cs.surfaceVariant,
+                desc = "Edit ${shift.name}",
                 tint = cs.onSurface,
                 onClick = onEdit
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(6.dp))
             CardActionButton(
                 icon = AppIcons.Delete,
-                desc = "Delete",
-                container = accents.negative.copy(alpha = 0.12f),
+                desc = "Delete ${shift.name}",
                 tint = accents.negative,
                 onClick = { showDelete = true }
             )
@@ -600,7 +368,7 @@ private fun ShiftCard(
             },
             text = {
                 Text(
-                    "\"${shift.name}\" will be removed from your saved shifts. Shifts already on your calendar stay where they are.",
+                    "“${shift.name}” will be removed from your saved shifts. Shifts already on your calendar stay where they are.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = cs.onSurfaceVariant
                 )
@@ -609,38 +377,76 @@ private fun ShiftCard(
                 Button(
                     onClick = { onDelete(); showDelete = false },
                     shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(containerColor = accents.negative)
+                    colors = ButtonDefaults.buttonColors(containerColor = accents.negative, contentColor = Color.White)
                 ) {
                     Text("Delete", style = MaterialTheme.typography.labelLarge)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDelete = false }) { Text("Cancel") }
+                TextButton(onClick = { showDelete = false }) {
+                    Text("Cancel", color = cs.onSurface)
+                }
             }
         )
     }
 }
+
+/**
+ * The shift on an ordinary clock face: 12 at the top, 3 on the right, so a
+ * 09:00–17:00 shift is drawn from the 9 round to the 5, just as the hands
+ * would sweep it. A shift of 12 hours or more fills the whole dial. A day of
+ * leave is the whole ring, dotted, since it has no hours on the clock.
+ */
 @Composable
-private fun CardChip(text: String, container: Color, contentColor: Color) {
+private fun DayRing(
+    start: String,
+    spanHours: Double,
+    allDay: Boolean,
+    label: String,
+    color: Color,
+    ink: Color,
+    track: Color,
+    contentDescription: String
+) {
+    val startHour = remember(start) {
+        val h = start.substringBefore(":").toIntOrNull() ?: 0
+        val m = start.substringAfter(":", "0").toIntOrNull() ?: 0
+        h + m / 60f
+    }
     Box(
         Modifier
-            .clip(CircleShape)
-            .background(container)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .size(64.dp)
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center
     ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.labelMedium,
-            color = contentColor,
-            maxLines = 1
-        )
+        Canvas(Modifier.matchParentSize()) {
+            val width = 7.dp.toPx()
+            val inset = width / 2 + 3.dp.toPx()
+            val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+            val topLeft = Offset(inset, inset)
+            drawArc(track, 0f, 360f, false, topLeft, arcSize, style = Stroke(width))
+            if (allDay) {
+                val dot = 3.dp.toPx()
+                drawArc(
+                    color, -90f, 360f, false, topLeft, arcSize,
+                    style = Stroke(width, cap = StrokeCap.Round, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.1f, dot + width)))
+                )
+            } else {
+                val sweep = (spanHours.coerceIn(0.0, 12.0) / 12.0 * 360.0).toFloat()
+                drawArc(
+                    color, -90f + (startHour % 12f) / 12f * 360f, sweep, false, topLeft, arcSize,
+                    style = Stroke(width, cap = StrokeCap.Round)
+                )
+            }
+        }
+        Text(label, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = ink, maxLines = 1)
     }
 }
+
 @Composable
 private fun CardActionButton(
     icon: Painter,
     desc: String,
-    container: Color,
     tint: Color,
     onClick: () -> Unit
 ) {
@@ -648,10 +454,11 @@ private fun CardActionButton(
         Modifier
             .size(44.dp)
             .clip(CircleShape)
-            .background(container)
-            .clickable(onClick = onClick),
+            .background(MaterialTheme.colorScheme.background)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = desc },
         contentAlignment = Alignment.Center
-    ) { Icon(icon, desc, tint = tint, modifier = Modifier.size(19.dp)) }
+    ) { Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp)) }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -685,53 +492,11 @@ fun EmptyTemplatesState(modifier: Modifier = Modifier, cs: ColorScheme = Materia
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "Tap the ＋ button to build your first shift. Save it once and drop it onto any day in a single tap.",
+                "Tap New to set up your first shift. Save it once, then add it to any day with a single tap.",
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 color = cs.onSurfaceVariant
             )
-        }
-    }
-}
-
-@Composable
-private fun NoMatchesState(
-    modifier: Modifier = Modifier,
-    cs: ColorScheme = MaterialTheme.colorScheme,
-    onReset: () -> Unit
-) {
-    Box(modifier, contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(horizontal = 44.dp).padding(bottom = 60.dp)
-        ) {
-            Box(
-                Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(cs.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    AppIcons.Search, null,
-                    tint = cs.onSurfaceVariant, modifier = Modifier.size(30.dp)
-                )
-            }
-            Spacer(Modifier.height(20.dp))
-            Text(
-                "Nothing matches",
-                style = MaterialTheme.typography.titleLarge,
-                color = cs.onBackground
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Try a different search or filter.",
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = cs.onSurfaceVariant
-            )
-            Spacer(Modifier.height(18.dp))
-            PillButton(text = "Clear filters", onClick = onReset, tinted = true)
         }
     }
 }

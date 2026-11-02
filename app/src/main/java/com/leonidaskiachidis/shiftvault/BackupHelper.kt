@@ -20,6 +20,8 @@ data class BackupData(
     val templates: List<Shift> = emptyList(),
     val profiles: List<JobProfile> = emptyList(),
     val activeProfileId: String = JobProfile.DEFAULT_ID,
+    /** True in backups made since shifts carry the Extra switch. */
+    val extraFlagged: Boolean = false,
     /**
      * True in backups made since the ledger existed. Older files lack it, and
      * restoring one then leaves the ledger alone instead of emptying it.

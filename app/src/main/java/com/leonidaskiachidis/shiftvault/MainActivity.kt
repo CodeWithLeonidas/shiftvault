@@ -1,18 +1,19 @@
 package com.leonidaskiachidis.shiftvault
 
 import android.os.Bundle
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.runtime.mutableIntStateOf
@@ -611,6 +612,13 @@ class MainActivity : ComponentActivity() {
                                         onAddExpected = { lines -> shiftManager.addEarnings(lines) },
                                         onSetShortfallAccepted = { id, accepted ->
                                             scope.launch { shiftManager.setShortfallAccepted(id, accepted) }
+                                        },
+                                        onSetExtraPaid = { targets, paid ->
+                                            scope.launch {
+                                                shiftManager.updateShifts { map ->
+                                                    ExtraHours.setPaid(map, activeProfile.id, targets, paid)
+                                                }
+                                            }
                                         }
                                     )
                                 }
@@ -1013,19 +1021,16 @@ private val NavDestinations = listOf(
  */
 internal fun navIndexOf(route: String?): Int = NavDestinations.indexOfFirst { it.route == route }
 
-/** Size of the pill that marks the current tab. */
-private val NavPillWidth = 64.dp
-private val NavPillHeight = 34.dp
-private val NavTopPadding = 10.dp
+// The bar floats as a pill above the page; the current tab is a filled capsule
+// that carries its label, the others are icons alone.
+private val NavBarHeight = 64.dp
+private val NavItemHeight = 46.dp
+private val NavItemMinWidth = 48.dp
 
-// The pill's two ends travel on separate springs. The end facing the new tab
-// leads and the other follows, so the pill stretches towards where you're going
-// and gathers itself up on arrival. Both are critically damped: it lands
-// without wobbling, and a tap mid-flight simply re-aims both ends.
-private val NavLeadSpring = spring<Dp>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 800f)
-private val NavTrailSpring = spring<Dp>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 300f)
-/** How much the pill thins while fully stretched — it keeps its volume, like a drop. */
-private const val NavPillSquash = 0.16f
+// One spring for the capsule growing, shrinking and recolouring. Lightly
+// under-damped, it settles softly rather than stopping hard, and is done before
+// the page slide is; a tap mid-flight simply re-aims it.
+private val NavSpring = spring<IntSize>(dampingRatio = 0.82f, stiffness = 520f)
 
 @Composable
 fun BottomNavigationBar(
@@ -1035,74 +1040,53 @@ fun BottomNavigationBar(
     val cs = MaterialTheme.colorScheme
     val isDark = AppTheme.accents.isDark
 
-    // Curved shoulders on the left and right, sitting on its own surface so the
-    // curve actually reads against the page behind it.
-    val shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
-
-    // While the shift form is over the tabs no tab route is current; the pill
-    // stays where it was instead of vanishing and flying back in.
+    // While the shift form is over the tabs no tab route is current; the
+    // capsule stays where it was instead of vanishing and flying back in.
     val routeIndex = navIndexOf(currentRoute)
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
-    var travelsRight by remember { mutableStateOf(true) }
-    if (routeIndex >= 0 && routeIndex != selectedIndex) {
-        travelsRight = routeIndex > selectedIndex
-        selectedIndex = routeIndex
-    }
+    if (routeIndex >= 0 && routeIndex != selectedIndex) selectedIndex = routeIndex
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = shape,
-        color = cs.surface,
-        contentColor = cs.onSurface,
-        // A shadow says nothing on a dark ground, so the edge is drawn instead.
-        shadowElevation = if (isDark) 0.dp else 10.dp,
-        border = if (isDark) BorderStroke(1.dp, cs.outline) else null
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(cs.background)
+            .navigationBarsPadding()
+            .padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 14.dp)
     ) {
-        BoxWithConstraints(
-            Modifier
+        Surface(
+            modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 8.dp)
+                .height(NavBarHeight)
+                // A long, low shadow lifts the pill off the page; on a dark
+                // ground it says nothing, so only the hairline is left.
+                .then(
+                    if (isDark) Modifier
+                    else Modifier.shadow(
+                        elevation = 18.dp,
+                        shape = CircleShape,
+                        ambientColor = Color.Black.copy(alpha = 0.10f),
+                        spotColor = Color.Black.copy(alpha = 0.22f)
+                    )
+                ),
+            shape = CircleShape,
+            color = cs.surface,
+            contentColor = cs.onSurface,
+            border = BorderStroke(1.dp, cs.outline)
         ) {
-            val slot = maxWidth / NavDestinations.size
-            val center = slot * selectedIndex + slot / 2
-            val left = animateDpAsState(
-                targetValue = center - NavPillWidth / 2,
-                animationSpec = if (travelsRight) NavTrailSpring else NavLeadSpring,
-                label = "navPillLeft"
-            )
-            val right = animateDpAsState(
-                targetValue = center + NavPillWidth / 2,
-                animationSpec = if (travelsRight) NavLeadSpring else NavTrailSpring,
-                label = "navPillRight"
-            )
-            val pillColor = cs.primaryContainer
             Row(
                 Modifier
-                    .fillMaxWidth()
-                    .selectableGroup()
-                    // Read in the draw phase only: the glide redraws the bar,
-                    // it never recomposes or re-lays it out.
-                    .drawBehind {
-                        val l = left.value.toPx()
-                        val width = right.value.toPx() - l
-                        val stretch = (width / NavPillWidth.toPx() - 1f).coerceIn(0f, 1f)
-                        val height = NavPillHeight.toPx() * (1f - NavPillSquash * stretch)
-                        drawRoundRect(
-                            color = pillColor,
-                            topLeft = Offset(l, NavTopPadding.toPx() + (NavPillHeight.toPx() - height) / 2),
-                            size = Size(width, height),
-                            cornerRadius = CornerRadius(height / 2)
-                        )
-                    }
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp)
+                    .selectableGroup(),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 NavDestinations.forEachIndexed { index, destination ->
                     BottomNavItem(
                         label = destination.label,
                         icon = destination.icon,
                         isSelected = index == selectedIndex,
-                        onClick = { onNavigate(destination.route) },
-                        modifier = Modifier.weight(1f)
+                        onClick = { onNavigate(destination.route) }
                     )
                 }
             }
@@ -1115,42 +1099,33 @@ private fun BottomNavItem(
     label: String,
     @androidx.annotation.DrawableRes icon: Int,
     isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    onClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val isDark = AppTheme.accents.isDark
     val motion = tween<Color>(220)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
 
-    // Unselected tabs are line drawings; the current one fills in with the
-    // theme colour, so the active tab is told by shape as well as by colour.
-    val outline by animateColorAsState(if (isSelected) cs.primary else cs.onSurfaceVariant, motion, label = "navOutline")
+    val container by animateColorAsState(if (isSelected) cs.primary else Color.Transparent, motion, label = "navContainer")
+    val content by animateColorAsState(if (isSelected) cs.onPrimary else cs.onSurfaceVariant, motion, label = "navContent")
     val fill by animateColorAsState(
-        if (isSelected) cs.primary.copy(alpha = if (isDark) 0.34f else 0.24f) else Color.Transparent,
+        if (isSelected) cs.onPrimary.copy(alpha = 0.28f) else Color.Transparent,
         motion, label = "navFill"
     )
-    val accent by animateColorAsState(if (isSelected) cs.primary else Color.Transparent, motion, label = "navAccent")
-    // The darker container tone, not primary: it keeps the small label above
-    // 4.5:1 against the bar in every palette.
-    val labelColor by animateColorAsState(if (isSelected) cs.onPrimaryContainer else cs.onSurfaceVariant, motion, label = "navLabel")
-    // A press dips the icon before anything else happens, so the tap is felt
-    // even on the tab you're already on.
+    // A press dips whichever tab is touched, so the tap is felt even on the current one.
     val scale by animateFloatAsState(
-        when {
-            pressed -> 0.86f
-            isSelected -> 1f
-            else -> 0.92f
-        },
-        spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium),
+        if (pressed) 0.92f else 1f,
+        spring(dampingRatio = 0.6f, stiffness = 500f),
         label = "navScale"
     )
-    val halo by animateFloatAsState(if (pressed && !isSelected) 1f else 0f, tween(120), label = "navHalo")
-    val haloColor = cs.onSurface
 
-    Column(
-        modifier = modifier
+    Row(
+        modifier = Modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .height(NavItemHeight)
+            .widthIn(min = NavItemMinWidth)
+            .clip(CircleShape)
+            .drawBehind { drawRect(container) }
             .selectable(
                 selected = isSelected,
                 role = Role.Tab,
@@ -1158,37 +1133,29 @@ private fun BottomNavItem(
                 indication = null,
                 onClick = onClick
             )
-            .padding(top = NavTopPadding, bottom = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .semantics { contentDescription = label }
+            .animateContentSize(NavSpring)
+            .padding(horizontal = if (isSelected) 16.dp else 13.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier
-                .size(NavPillWidth, NavPillHeight)
-                .drawBehind {
-                    if (halo > 0f) {
-                        drawRoundRect(
-                            haloColor.copy(alpha = 0.07f * halo),
-                            cornerRadius = CornerRadius(size.height / 2)
-                        )
-                    }
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            ToneIcon(
-                id = icon,
-                contentDescription = null,
-                tones = IconTones(outline, fill, accent),
-                size = 24.dp,
-                modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
+        ToneIcon(
+            id = icon,
+            contentDescription = null,
+            tones = IconTones(content, fill, content),
+            size = if (isSelected) 20.dp else 22.dp
+        )
+        if (isSelected) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = label,
+                color = content,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                // The tab already carries its name for TalkBack.
+                modifier = Modifier.clearAndSetSemantics {}
             )
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = label,
-            color = labelColor,
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1
-        )
     }
 }
 

@@ -65,6 +65,15 @@ data class Shift(
     /** A ShiftIconCatalog key; null shows the first letter of [name]. */
     val iconName: String? = null,
 
+    // ── Extra hours ──
+    /**
+     * Hours beyond the normal schedule — overtime, a picked-up shift. Only a
+     * label: it changes no pay by itself (a multiplier, if any, is separate).
+     */
+    val isExtra: Boolean = false,
+    /** For an extra shift on the calendar: its hours have been paid. */
+    val extraPaid: Boolean = false,
+
     // ── Legacy (v1) — kept so old saved JSON still decodes. Read via
     //    migrated(); never write to these from new code. ──
     val isHoliday: Boolean = false,
@@ -109,6 +118,21 @@ data class Shift(
     /** All-day markers are stored as a full 00:00–23:59 span. */
     val isAllDaySpan: Boolean
         get() = startTime == "00:00" && endTime == "23:59"
+
+    /**
+     * Before the Extra switch existed, extra hours were told by the old
+     * "1.5× OT" and "2× Double" presets. Records from then are marked Extra
+     * once, keeping their multiplier, so their pay is unchanged. Holiday
+     * (1.75×) shifts were premium time, not extra hours, and stay normal.
+     */
+    fun withLegacyExtraFlag(): Shift =
+        if (!isExtra && migrated().dayType == DayType.WORKED && payMultiplier in LegacyExtraMultipliers) copy(isExtra = true)
+        else this
+
+    companion object {
+        /** The presets that meant "extra hours" before there was a switch for it. */
+        val LegacyExtraMultipliers = setOf(PayMultipliers.OVERTIME, PayMultipliers.DOUBLE)
+    }
 }
 
 /**

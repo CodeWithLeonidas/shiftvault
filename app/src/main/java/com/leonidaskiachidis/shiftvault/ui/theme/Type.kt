@@ -11,36 +11,35 @@ import androidx.compose.ui.unit.sp
 import com.leonidaskiachidis.shiftvault.R
 
 /**
- * One weight of the bundled Manrope variable font.
+ * One weight of the bundled Inter Tight variable font.
  *
  * The weight has to be set on the font's `wght` axis explicitly. The plain
  * `Font(resId, weight)` overload only *labels* the font with a weight and
- * leaves the axis alone, so every one of these rendered at the file's default
- * instance — Manrope's default is 200, ExtraLight — and the whole app read as
- * hairline-thin no matter what the type scale below asked for.
+ * leaves the axis alone, so every weight would render at the file's default
+ * instance whatever the type scale below asked for.
  */
 @OptIn(ExperimentalTextApi::class)
-private fun manrope(weight: FontWeight) = Font(
-    R.font.manrope_variablefont,
+private fun interTight(weight: FontWeight) = Font(
+    R.font.inter_tight_variable,
     weight = weight,
     variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight))
 )
 
-// 1. The base FontFamily
-val Manrope = FontFamily(
-    manrope(FontWeight.Normal),   // W400
-    manrope(FontWeight.Medium),   // W500
-    manrope(FontWeight.SemiBold), // W600
-    manrope(FontWeight.Bold),     // W700
-    manrope(FontWeight.ExtraBold) // W800
+// 1. The base FontFamily — subset to Latin, Greek and symbols to keep the APK lean.
+val InterTight = FontFamily(
+    interTight(FontWeight.Normal),   // W400
+    interTight(FontWeight.Medium),   // W500
+    interTight(FontWeight.SemiBold), // W600
+    interTight(FontWeight.Bold),     // W700
+    interTight(FontWeight.ExtraBold) // W800
 )
 
 /**
  * Single switch for the whole app's font.
- * Swap this to another FontFamily (e.g. a rounded face) and every
- * screen follows — no other file needs to change.
+ * Swap this to another FontFamily and every screen follows — no other file
+ * needs to change.
  */
-val AppFontFamily: FontFamily = Manrope
+val AppFontFamily: FontFamily = InterTight
 
 // Tabular figures: keeps money/time columns vertically aligned
 private const val TabularNums = "tnum"
@@ -49,33 +48,33 @@ private const val TabularNums = "tnum"
 //
 // Weights step down as text gets longer: Bold for the few words that anchor a
 // screen, SemiBold for titles and anything tappable, Medium for reading text.
-// Manrope is open and wide, so it needs no positive tracking at body sizes;
-// only the large sizes are tightened, and only the smallest labels opened up.
+// Inter Tight is already narrow, so body sizes keep neutral tracking; the
+// large sizes are pulled in further, as the display type in the design is.
 val Typography = Typography(
 
     // ── Screen titles: "Analytics", "My Shifts"; sheet titles ──
     displayLarge = TextStyle(
         fontFamily = AppFontFamily,
         fontWeight = FontWeight.Bold,
-        fontSize = 32.sp,
+        fontSize = 34.sp,
         lineHeight = 38.sp,
-        letterSpacing = (-0.6).sp
+        letterSpacing = (-1.3).sp
     ),
     displayMedium = TextStyle(
         fontFamily = AppFontFamily,
         fontWeight = FontWeight.Bold,
-        fontSize = 26.sp,
-        lineHeight = 32.sp,
-        letterSpacing = (-0.4).sp
+        fontSize = 24.sp,
+        lineHeight = 30.sp,
+        letterSpacing = (-0.8).sp
     ),
 
     // ── Big numbers: "142h", "$2,840", "7.4h" ──
     headlineLarge = TextStyle(
         fontFamily = AppFontFamily,
         fontWeight = FontWeight.Bold,
-        fontSize = 30.sp,
-        lineHeight = 36.sp,
-        letterSpacing = (-0.5).sp,
+        fontSize = 32.sp,
+        lineHeight = 38.sp,
+        letterSpacing = (-1.1).sp,
         fontFeatureSettings = TabularNums
     ),
     headlineMedium = TextStyle(
@@ -83,7 +82,7 @@ val Typography = Typography(
         fontWeight = FontWeight.Bold,
         fontSize = 24.sp,
         lineHeight = 30.sp,
-        letterSpacing = (-0.3).sp,
+        letterSpacing = (-0.6).sp,
         fontFeatureSettings = TabularNums
     ),
     headlineSmall = TextStyle(
@@ -119,7 +118,7 @@ val Typography = Typography(
         letterSpacing = 0.sp
     ),
 
-    // ── Body: Medium, not Regular — Manrope's 400 is light on a phone screen ──
+    // ── Body: Medium, not Regular — a touch more presence on a phone screen ──
     bodyLarge = TextStyle(
         fontFamily = AppFontFamily,
         fontWeight = FontWeight.Medium,
@@ -156,13 +155,13 @@ val Typography = Typography(
         fontWeight = FontWeight.SemiBold,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.2.sp
+        letterSpacing = 0.1.sp
     ),
     labelSmall = TextStyle(
         fontFamily = AppFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.3.sp
+        letterSpacing = 0.2.sp
     )
 )

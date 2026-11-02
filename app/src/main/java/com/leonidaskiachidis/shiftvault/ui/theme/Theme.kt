@@ -178,7 +178,17 @@ private fun softDark(
 //  LIGHT PALETTES — eight distinct hue families
 // ══════════════════════════════════════════════════════════════
 
-// 1 · CORAL — the redesign baseline
+// 0 · MONO — the default: near-black ink on white, colour left to the shifts
+private val MonoLight = softLight(
+    primary = Color(0xFF0F0F12), primaryContainer = Color(0xFFF5F5F7),
+    onPrimaryContainer = Color(0xFF0F0F12),
+    secondary = Color(0xFF6E6E78), tertiary = Color(0xFF3AA0F2),
+    background = Color(0xFFFFFFFF), surfaceVariant = Color(0xFFF5F5F7),
+    outline = Color(0xFFE4E4E8), outlineVariant = Color(0xFFF0F0F2),
+    ink = Color(0xFF0F0F12), muted = Color(0xFF6E6E78)
+)
+
+// 1 · CORAL — the previous baseline
 private val CoralLight = softLight(
     primary = Color(0xFFF0685A), primaryContainer = Color(0xFFFDE7E3),
     onPrimaryContainer = Color(0xFFC24C3D),
@@ -261,6 +271,16 @@ private val SlateLight = softLight(
 // ══════════════════════════════════════════════════════════════
 //  DARK PALETTES — eight distinct hue families
 // ══════════════════════════════════════════════════════════════
+
+// 0 · MONO — the default: near-white ink on near-black
+private val MonoDark = softDark(
+    primary = Color(0xFFF2F2F4), primaryContainer = Color(0xFF1E1E23),
+    onPrimaryContainer = Color(0xFFF2F2F4),
+    secondary = Color(0xFF9A9AA4), tertiary = Color(0xFF7CC0F7),
+    background = Color(0xFF0E0E11), surface = Color(0xFF16161A),
+    surfaceHigh = Color(0xFF1C1C21), surfaceVariant = Color(0xFF1E1E23),
+    outline = Color(0xFF2C2C33), ink = Color(0xFFF2F2F4), muted = Color(0xFF9A9AA4)
+)
 
 // 1 · WARM NIGHT — coral on warm charcoal
 private val WarmNightDark = softDark(
@@ -363,7 +383,8 @@ private fun darkInfo(key: String, name: String, scheme: ColorScheme) =
     ThemeVariantInfo(key, name, true, scheme.primary, scheme.background, scheme.surface, scheme)
 
 val LightThemeVariants: List<ThemeVariantInfo> = listOf(
-    lightInfo("default", "Coral", CoralLight),
+    lightInfo("default", "Mono", MonoLight),
+    lightInfo("coral", "Coral", CoralLight),
     lightInfo("sage", "Sage", SageLight),
     lightInfo("lilac", "Lilac", LilacLight),
     lightInfo("ocean", "Ocean", OceanLight),
@@ -374,7 +395,8 @@ val LightThemeVariants: List<ThemeVariantInfo> = listOf(
 )
 
 val DarkThemeVariants: List<ThemeVariantInfo> = listOf(
-    darkInfo("default", "Warm Night", WarmNightDark),
+    darkInfo("default", "Mono", MonoDark),
+    darkInfo("warmnight", "Warm Night", WarmNightDark),
     darkInfo("forest", "Forest", ForestDark),
     darkInfo("amethyst", "Amethyst", AmethystDark),
     darkInfo("deepsea", "Deep Sea", DeepSeaDark),
@@ -398,7 +420,7 @@ val supportsDynamicTheme: Boolean
 private fun dynamicScheme(isDark: Boolean, context: Context): ColorScheme =
     if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
 
-/** What the theme picker offers: the wallpaper theme first where there is one, then the app's eight. */
+/** What the theme picker offers: the wallpaper theme first where there is one, then the app's own palettes. */
 fun themeVariantsFor(isDark: Boolean, context: Context): List<ThemeVariantInfo> {
     val fixed = if (isDark) DarkThemeVariants else LightThemeVariants
     if (!supportsDynamicTheme) return fixed
@@ -410,9 +432,9 @@ fun themeVariantsFor(isDark: Boolean, context: Context): List<ThemeVariantInfo> 
 
 fun resolveColorScheme(isDark: Boolean, variant: String): ColorScheme =
     if (isDark) {
-        DarkThemeVariants.firstOrNull { it.key == variant }?.colorScheme ?: WarmNightDark
+        DarkThemeVariants.firstOrNull { it.key == variant }?.colorScheme ?: MonoDark
     } else {
-        LightThemeVariants.firstOrNull { it.key == variant }?.colorScheme ?: CoralLight
+        LightThemeVariants.firstOrNull { it.key == variant }?.colorScheme ?: MonoLight
     }
 
 @Composable

@@ -484,6 +484,9 @@ fun ProfileEditorSheet(
     var overtimeMultiplier by rememberSaveable(editing) { mutableDoubleStateOf(initialPay.overtimeMultiplier) }
     var overtimeCompensation by rememberSaveable(editing) { mutableStateOf(initialPay.overtimeCompensation) }
     val isFixed = payMode == PayMode.FIXED_MONTHLY
+    // Overtime rules, goals and deductions are set once and rarely touched:
+    // folded away so the editor opens on what every job needs.
+    var advancedOpen by rememberSaveable(editing) { mutableStateOf(false) }
     // A salary typed for a profile that had none yet becomes its starting salary.
     val effectiveHistory = salaryHistory.ifEmpty {
         parseCents(firstSalaryText)?.takeIf { it > 0L }?.let { listOf(SalaryRate(null, it)) } ?: emptyList()
@@ -568,11 +571,7 @@ fun ProfileEditorSheet(
                         salaryHistory = PaySetup(salaryHistory = effectiveHistory).withSalary(from, cents).salaryHistory
                         firstSalaryText = ""
                     },
-                    onRemove = { rate -> salaryHistory = salaryHistory - rate },
-                    referenceRateText = referenceRateText,
-                    onReferenceRate = { referenceRateText = it },
-                    contractHoursText = contractHoursText,
-                    onContractHours = { contractHoursText = it }
+                    onRemove = { rate -> salaryHistory = salaryHistory - rate }
                 )
             } else {
                 Spacer(Modifier.height(20.dp))
@@ -614,70 +613,96 @@ fun ProfileEditorSheet(
             )
 
             Spacer(Modifier.height(20.dp))
-            OvertimeSection(
-                isFixed = isFixed,
-                source = overtimeSource,
-                onSource = { overtimeSource = it },
-                contractHoursText = contractHoursText,
-                onContractHours = { contractHoursText = it },
-                dailyLimitText = dailyLimitText,
-                onDailyLimit = { dailyLimitText = it },
-                multiplier = overtimeMultiplier,
-                onMultiplier = { overtimeMultiplier = it },
-                compensation = overtimeCompensation,
-                onCompensation = { overtimeCompensation = it },
-                hasReferenceRate = (parseDecimal(referenceRateText) ?: 0.0) > 0.0
-            )
+            val advancedSummary = buildList {
+                add("Overtime: ${overtimeSource.label.lowercase()}, ${overtimeCompensation.label.lowercase()}")
+                parseDecimal(earningsGoalText)?.takeIf { it > 0.0 }?.let { add("goal $currencySymbol${formatDecimalInput(it)}") }
+                parseDecimal(hoursGoalText)?.takeIf { it > 0.0 }?.let { add("goal ${formatDecimalInput(it)}h") }
+                parseDecimal(deductionText)?.takeIf { it > 0.0 }?.let { add("${formatDecimalInput(it)}% deductions") }
+            }.joinToString(" \u00b7 ")
+            CollapsibleSection(
+                icon = AppIcons.Statistics,
+                title = "Advanced",
+                summary = advancedSummary,
+                summaryActive = false,
+                expanded = advancedOpen,
+                onToggle = { advancedOpen = !advancedOpen }
+            ) {
+                if (isFixed) {
+                    SalaryReferenceFields(
+                        history = effectiveHistory,
+                        currencySymbol = currencySymbol,
+                        referenceRateText = referenceRateText,
+                        onReferenceRate = { referenceRateText = it },
+                        contractHoursText = contractHoursText,
+                        onContractHours = { contractHoursText = it }
+                    )
+                    Spacer(Modifier.height(20.dp))
+                }
+                OvertimeSection(
+                    isFixed = isFixed,
+                    source = overtimeSource,
+                    onSource = { overtimeSource = it },
+                    contractHoursText = contractHoursText,
+                    onContractHours = { contractHoursText = it },
+                    dailyLimitText = dailyLimitText,
+                    onDailyLimit = { dailyLimitText = it },
+                    multiplier = overtimeMultiplier,
+                    onMultiplier = { overtimeMultiplier = it },
+                    compensation = overtimeCompensation,
+                    onCompensation = { overtimeCompensation = it },
+                    hasReferenceRate = (parseDecimal(referenceRateText) ?: 0.0) > 0.0
+                )
 
-            Spacer(Modifier.height(20.dp))
-            FieldLabel("Goals per pay period", optional = true)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Home shows how far along each pay period is.",
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) {
-                    FormTextField(
-                        value = earningsGoalText,
-                        onValueChange = { earningsGoalText = it },
-                        placeholder = "Earnings",
-                        singleLine = true,
-                        keyboardType = KeyboardType.Decimal,
-                        prefix = currencySymbol
-                    )
+                Spacer(Modifier.height(20.dp))
+                FieldLabel("Goals per pay period", optional = true)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Home shows how far along each pay period is.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.weight(1f)) {
+                        FormTextField(
+                            value = earningsGoalText,
+                            onValueChange = { earningsGoalText = it },
+                            placeholder = "Earnings",
+                            singleLine = true,
+                            keyboardType = KeyboardType.Decimal,
+                            prefix = currencySymbol
+                        )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        FormTextField(
+                            value = hoursGoalText,
+                            onValueChange = { hoursGoalText = it },
+                            placeholder = "Hours",
+                            singleLine = true,
+                            keyboardType = KeyboardType.Decimal,
+                            suffix = "h"
+                        )
+                    }
                 }
-                Box(Modifier.weight(1f)) {
-                    FormTextField(
-                        value = hoursGoalText,
-                        onValueChange = { hoursGoalText = it },
-                        placeholder = "Hours",
-                        singleLine = true,
-                        keyboardType = KeyboardType.Decimal,
-                        suffix = "h"
-                    )
-                }
+
+                Spacer(Modifier.height(20.dp))
+                FieldLabel("Deductions", optional = true)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Tax and insurance, roughly. Only used to estimate your take-home pay.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                FormTextField(
+                    value = deductionText,
+                    onValueChange = { deductionText = it },
+                    placeholder = "0",
+                    singleLine = true,
+                    keyboardType = KeyboardType.Decimal,
+                    suffix = "%"
+                )
             }
-
-            Spacer(Modifier.height(20.dp))
-            FieldLabel("Deductions", optional = true)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Tax and insurance, roughly. Only used to estimate your take-home pay.",
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant
-            )
-            Spacer(Modifier.height(10.dp))
-            FormTextField(
-                value = deductionText,
-                onValueChange = { deductionText = it },
-                placeholder = "0",
-                singleLine = true,
-                keyboardType = KeyboardType.Decimal,
-                suffix = "%"
-            )
 
             Spacer(Modifier.height(22.dp))
             Surface(
@@ -967,11 +992,7 @@ private fun SalarySection(
     firstSalaryText: String,
     onFirstSalaryText: (String) -> Unit,
     onSetSalary: (from: LocalDate?, cents: Long) -> Unit,
-    onRemove: (SalaryRate) -> Unit,
-    referenceRateText: String,
-    onReferenceRate: (String) -> Unit,
-    contractHoursText: String,
-    onContractHours: (String) -> Unit
+    onRemove: (SalaryRate) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     val money = { cents: Long -> formatCents(cents, currencySymbol) }
@@ -1033,8 +1054,23 @@ private fun SalarySection(
         Spacer(Modifier.height(8.dp))
         SalaryChange(payPeriod, currencySymbol, onSetSalary)
     }
+}
 
-    Spacer(Modifier.height(20.dp))
+/**
+ * Contract hours and the reference rate: what a salaried job needs only to
+ * put a value on overtime. Kept in Advanced, out of the everyday path.
+ */
+@Composable
+private fun SalaryReferenceFields(
+    history: List<SalaryRate>,
+    currencySymbol: String,
+    referenceRateText: String,
+    onReferenceRate: (String) -> Unit,
+    contractHoursText: String,
+    onContractHours: (String) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val money = { cents: Long -> formatCents(cents, currencySymbol) }
     FieldLabel("Contracted hours per week", optional = true)
     Spacer(Modifier.height(10.dp))
     FormTextField(
@@ -1064,7 +1100,7 @@ private fun SalarySection(
         prefix = currencySymbol,
         suffix = "/hr"
     )
-    val salaryNow = salaries.lastOrNull()?.monthlyCents ?: parseCents(firstSalaryText)
+    val salaryNow = PaySetup(salaryHistory = history).currentSalaryCents
     val implied = salaryNow?.let {
         PaySetup(
             salaryHistory = listOf(SalaryRate(null, it)),
@@ -1213,7 +1249,7 @@ private fun OvertimeSection(
     Spacer(Modifier.height(8.dp))
     Text(
         when (source) {
-            OvertimeSource.MARKED_SHIFTS -> "Shifts set to 1.5\u00d7, 1.75\u00d7 or 2\u00d7 in the shift form count as overtime."
+            OvertimeSource.MARKED_SHIFTS -> "Shifts with Extra hours switched on count as overtime."
             OvertimeSource.WEEKLY_LIMIT -> "Hours past your contracted hours in a week count as overtime."
             OvertimeSource.DAILY_LIMIT -> "Hours past a daily limit count as overtime."
         },
@@ -1280,12 +1316,12 @@ private fun OvertimeSection(
     Text(
         when (compensation) {
             OvertimeCompensation.PAID ->
-                if (isFixed) "Paid on top of your salary: hours \u00d7 reference rate \u00d7 the multiplier."
-                else "Paid at the shift\u2019s rate \u00d7 the multiplier."
-            OvertimeCompensation.TIME_OFF -> "Not paid in money: hours \u00d7 the multiplier are banked as time off."
+                if (isFixed) "Paid on top of your salary at the reference rate (times a shift\u2019s own multiplier, if it has one)."
+                else "Paid at the shift\u2019s own rate \u2014 nothing is added automatically."
+            OvertimeCompensation.TIME_OFF -> "Not paid in money: the hours are banked as time off."
             OvertimeCompensation.TRACK_ONLY ->
                 if (isFixed) "Counted and shown; nothing is added to your salary."
-                else "Counted and shown; overtime hours are paid at the plain rate, with no premium."
+                else "Counted and shown; paid like any other hour."
         },
         style = MaterialTheme.typography.bodySmall,
         color = cs.onSurfaceVariant
@@ -1656,9 +1692,9 @@ fun EmptyProfileShiftsState(
             Spacer(Modifier.height(8.dp))
             Text(
                 if (canCopy)
-                    "Tap ＋ to build one, or copy the shifts you already set up for another job."
+                    "Tap New to set one up, or copy the shifts you already have in another job."
                 else
-                    "Tap the ＋ button to build your first shift. Save it once and drop it onto any day in a single tap.",
+                    "Tap New to set up your first shift. Save it once, then add it to any day with a single tap.",
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 color = cs.onSurfaceVariant

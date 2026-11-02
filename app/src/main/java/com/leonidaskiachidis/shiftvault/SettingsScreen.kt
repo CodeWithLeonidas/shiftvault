@@ -24,6 +24,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -153,7 +161,7 @@ fun SettingsScreen(
 
     val variants = remember(isDarkTheme, context) { themeVariantsFor(isDarkTheme, context) }
     val variantName = remember(variants, themeVariant) {
-        variants.firstOrNull { it.key == themeVariant }?.displayName ?: "Coral"
+        variants.firstOrNull { it.key == themeVariant }?.displayName ?: "Mono"
     }
 
     Column(
@@ -162,19 +170,18 @@ fun SettingsScreen(
             .background(cs.background)
             .statusBarsPadding()
     ) {
-        ScreenHeader(
-            title = "Settings",
-            subtitle = "Preferences, data, and about"
+        Text(
+            "Settings",
+            style = ScreenTitleStyle,
+            color = cs.onBackground,
+            modifier = Modifier.padding(horizontal = AppSpace.screenH).padding(top = 16.dp)
         )
-
-        Spacer(Modifier.height(6.dp))
 
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
             Column(
                 Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(top = 12.dp)
             ) {
                 // ── General ──
                 SectionLabel("General")
@@ -183,15 +190,15 @@ fun SettingsScreen(
                         icon = AppIcons.SetCurrency,
                         badgeColor = accents.morning,
                         title = "Currency",
-                        subtitle = "Set your default currency",
+                        subtitle = null,
                         value = "$currencySymbol $selectedCurrencyCode"
                     ) { showCurrency = true }
                     RowDivider()
                     SettingRow(
                         icon = AppIcons.SetWeekStart,
                         badgeColor = accent,
-                        title = "Week start day",
-                        subtitle = "First day of the week in your calendar",
+                        title = "Week starts on",
+                        subtitle = null,
                         value = startOfWeek
                     ) { showWeekStart = true }
                 }
@@ -209,9 +216,10 @@ fun SettingsScreen(
                     SettingRow(
                         icon = AppIcons.SetTheme,
                         badgeColor = accents.evening,
-                        title = "Theme",
-                        subtitle = "Choose your accent palette",
-                        value = variantName
+                        title = "Accent",
+                        subtitle = null,
+                        value = variantName,
+                        valueDot = variants.firstOrNull { it.key == themeVariant }?.previewPrimary ?: cs.primary
                     ) { showTheme = true }
                 }
 
@@ -233,11 +241,11 @@ fun SettingsScreen(
                             Modifier
                                 .fillMaxWidth()
                                 .horizontalScroll(rememberScrollState())
-                                .padding(start = 74.dp, end = 16.dp, bottom = 12.dp),
+                                .padding(start = 62.dp, end = 14.dp, bottom = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             ReminderSettings.LeadChoices.forEach { minutes ->
-                                FilterPill(
+                                ChoiceChip(
                                     text = ReminderSettings.leadLabel(minutes),
                                     selected = minutes == reminders.shiftLeadMinutes,
                                     onClick = { updateReminders(reminders.copy(shiftLeadMinutes = minutes)) }
@@ -294,7 +302,7 @@ fun SettingsScreen(
                         icon = AppIcons.SetExportExcel,
                         badgeColor = cs.secondary,
                         title = "Export to Excel",
-                        subtitle = "A formatted spreadsheet, for any period",
+                        subtitle = "A formatted spreadsheet, any period",
                         value = null,
                         onClick = onExportExcel
                     )
@@ -303,7 +311,7 @@ fun SettingsScreen(
                         icon = AppIcons.Calendar,
                         badgeColor = accents.evening,
                         title = "Add to your calendar",
-                        subtitle = "Your shifts as an .ics file for Google, Outlook or Samsung Calendar",
+                        subtitle = "Google, Outlook or Samsung (.ics)",
                         value = null,
                         onClick = onExportCalendar
                     )
@@ -359,11 +367,7 @@ fun SettingsScreen(
                         }
                         context.startActivity(Intent.createChooser(i, "Share ShiftVault"))
                     }
-                }
-
-                // ── About ──
-                SectionLabel("About")
-                Group {
+                    RowDivider()
                     SettingRow(
                         icon = AppIcons.SetWhatsNew,
                         badgeColor = accents.evening,
@@ -397,14 +401,14 @@ fun SettingsScreen(
                     SettingRow(
                         icon = AppIcons.SetAbout,
                         badgeColor = cs.onSurfaceVariant,
-                        title = "About Shift Vault",
-                        subtitle = "Version $versionName",
-                        value = null,
+                        title = "About",
+                        subtitle = null,
+                        value = versionName,
                         showChevron = false
                     ) { }
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(24.dp))
                 Text(
                     "Developed by Leonidas Kiachidis",
                     modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp),
@@ -716,6 +720,7 @@ fun SettingsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    WhatsNew("Extra hours", "Switch a shift to Extra: Home counts it separately, and the Wallet tracks it until it's paid.", accent)
                     WhatsNew("Goals & take-home", "Set an earnings or hours goal per pay period, and see your pay after deductions. Tap the total on Home.", accent)
                     WhatsNew("Rest warnings", "Days with too little rest, a 7th day in a row or a 48h+ week are marked on the calendar.", accent)
                     WhatsNew("Add to your calendar", "Export your shifts as a calendar file from Settings or the Export sheet.", accent)
@@ -768,64 +773,39 @@ fun SettingsScreen(
 private fun SectionLabel(title: String) {
     Text(
         title,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(
-            start = AppSpace.screenH + 4.dp,
+            start = AppSpace.screenH + 2.dp,
             end = AppSpace.screenH,
-            top = 4.dp,
-            bottom = 10.dp
+            top = 26.dp,
+            bottom = 8.dp
         )
     )
 }
 
+/** A hairline-edged block of rows, as every section of the screen is. */
 @Composable
 private fun Group(content: @Composable ColumnScope.() -> Unit) {
-    SoftCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpace.screenH),
-        shape = MaterialTheme.shapes.large,
-        contentPadding = PaddingValues(vertical = 4.dp),
+    GroupedRows(
+        modifier = Modifier.padding(horizontal = AppSpace.screenH),
         content = content
     )
-    Spacer(Modifier.height(22.dp))
 }
 
 @Composable
-private fun RowDivider() =
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 76.dp, end = 16.dp)
-            .height(1.dp)
-            .background(MaterialTheme.colorScheme.outline)
-    )
+private fun RowDivider() = GroupDivider()
 
+/** A row's mark: its icon on a soft wash of [color]. */
 @Composable
-private fun Badge(icon: Painter, color: Color) =
+private fun Badge(icon: Painter, color: Color) {
+    val isDark = AppTheme.accents.isDark
+    val ink = remember(color, isDark) { ShiftColors.ink(color, isDark) }
     Box(
-        Modifier.size(42.dp).clip(CircleShape).background(color.copy(alpha = 0.16f)),
+        Modifier.size(36.dp).clip(CircleShape).background(color.copy(alpha = if (isDark) 0.24f else 0.16f)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
-    }
-
-@Composable
-private fun ValuePill(text: String) {
-    val cs = MaterialTheme.colorScheme
-    Box(
-        Modifier
-            .clip(CircleShape)
-            .background(cs.surfaceVariant)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.labelMedium,
-            color = cs.onSurfaceVariant,
-            maxLines = 1
-        )
+        Icon(icon, null, tint = ink, modifier = Modifier.size(19.dp))
     }
 }
 
@@ -839,6 +819,8 @@ private fun SettingRow(
     showChevron: Boolean = true,
     /** Overrides the muted subtitle colour, for a line that needs noticing. */
     subtitleColor: Color? = null,
+    /** A small colour mark before [value]: the accent palette's own colour. */
+    valueDot: Color? = null,
     onClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -846,37 +828,55 @@ private fun SettingRow(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Badge(icon, badgeColor)
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 title,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 color = cs.onSurface,
                 maxLines = 1, overflow = TextOverflow.Ellipsis
             )
             if (subtitle != null) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = subtitleColor ?: cs.onSurfaceVariant,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis
-                )
+                Spacer(Modifier.height(1.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // A line that needs noticing gets a dot too, so it reads without colour.
+                    if (subtitleColor != null) {
+                        Box(Modifier.size(6.dp).background(subtitleColor, CircleShape))
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall.let {
+                            if (subtitleColor != null) it.copy(fontWeight = FontWeight.SemiBold) else it
+                        },
+                        color = subtitleColor ?: cs.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
         if (value != null) {
             Spacer(Modifier.width(10.dp))
-            ValuePill(value)
+            if (valueDot != null) {
+                Box(Modifier.size(10.dp).background(valueDot, CircleShape))
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyLarge,
+                color = cs.onSurfaceVariant,
+                maxLines = 1
+            )
         }
         if (showChevron) {
             Spacer(Modifier.width(6.dp))
             Icon(
                 AppIcons.ChevronRight, null,
-                tint = cs.onSurfaceVariant, modifier = Modifier.size(20.dp)
+                tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp)
             )
         }
     }
@@ -895,35 +895,30 @@ private fun ReminderRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable { onChange(!checked) }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Badge(icon, badgeColor)
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface)
-            Spacer(Modifier.height(2.dp))
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant,
-                maxLines = 2, overflow = TextOverflow.Ellipsis
-            )
+            Text(title, style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+            Spacer(Modifier.height(1.dp))
+            AnimatedContent(
+                targetState = subtitle,
+                transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+                label = "reminderSubtitle"
+            ) { text ->
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+            }
         }
         Spacer(Modifier.width(10.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = cs.primary,
-                checkedBorderColor = cs.primary,
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = cs.surfaceVariant,
-                uncheckedBorderColor = cs.outline
-            )
-        )
+        PillSwitch(checked)
     }
 }
 
@@ -946,61 +941,39 @@ private fun ThemeModeRow(
     onChange: (String) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+    // Anything unrecognised is treated as "system", matching MainActivity.
+    val current = if (mode in listOf("light", "dark")) mode else "system"
+    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Badge(icon, badgeColor)
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    "Theme mode",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = cs.onSurface
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    when (mode) {
-                        "light" -> "Always light"
-                        "dark" -> "Always dark"
-                        else -> "Follows your phone's setting"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = cs.onSurfaceVariant,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        // Same segmented control as the day-type picker in the shift form.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 58.dp)
-                .clip(CircleShape)
-                .background(cs.surfaceVariant)
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            ThemeModes.forEach { (key, label) ->
-                // Anything unrecognised is treated as "system", matching MainActivity.
-                val selected = key == mode || (key == "system" && mode !in listOf("light", "dark"))
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(CircleShape)
-                        .background(if (selected) cs.primary else Color.Transparent)
-                        .clickable { if (!selected) onChange(key) }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+                Text("Theme", style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
+                Spacer(Modifier.height(1.dp))
+                AnimatedContent(
+                    targetState = current,
+                    transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+                    label = "themeModeHint"
+                ) { m ->
                     Text(
-                        label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (selected) cs.onPrimary else cs.onSurfaceVariant,
-                        maxLines = 1
+                        when (m) {
+                            "light" -> "Always light"
+                            "dark" -> "Always dark"
+                            else -> "Follows your phone"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        SegmentedPills(
+            options = ThemeModes,
+            selected = current,
+            onSelect = { if (it != current) onChange(it) }
+        )
     }
 }
 
